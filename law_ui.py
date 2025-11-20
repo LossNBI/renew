@@ -263,3 +263,110 @@ class LawBrowserUI:
                 # 여기서는 단순히 UI만 업데이트합니다.
                 messagebox.showinfo("완료", f"'{full_name_to_delete}'가 삭제되었습니다.")
             # 실패 메시지는 delete_law_callback 내부에서 처리됩니다.
+    
+    # 텍스트 창 생성 시 커서 설정 추가 (선택 사항)
+    def _create_text_pane(self, parent, title, column):
+        frame = ttk.Frame(parent, borderwidth=2, relief="groove")
+        frame.grid(row=0, column=column, sticky="nsew", padx=5, pady=5)
+        ttk.Label(frame, text=title, font=('Helvetica', 12, 'bold')).pack(pady=5)
+        
+        vscroll = ttk.Scrollbar(frame)
+        # state는 나중에 조절하므로 초기생성시는 기본값
+        text_widget = tk.Text(frame, wrap='word', yscrollcommand=vscroll.set) 
+        vscroll.config(command=text_widget.yview)
+        vscroll.pack(side='right', fill='y')
+        text_widget.pack(side='left', fill='both', expand=True)
+        
+        # 링크 태그 스타일 미리 정의 (파란색, 밑줄, 손가락 커서)
+        text_widget.tag_config("hyperlink", foreground="blue", underline=1)
+        # 마우스가 올라가면 손가락 모양, 나가면 화살표 (Tkinter 기본 기능 활용)
+        text_widget.tag_bind("hyperlink", "<Enter>", lambda e: text_widget.config(cursor="hand2"))
+        text_widget.tag_bind("hyperlink", "<Leave>", lambda e: text_widget.config(cursor="arrow"))
+        
+        return text_widget
+
+    def display_main_law(self, article_data, analyzer, current_law_full_name, link_click_callback):
+        """
+        창 1에 법률 내용을 표시하고, 하이퍼링크를 생성합니다.
+        Analyzer와 Callback을 여기서 직접 사용합니다.
+        """
+        self.pane1.config(state=tk.NORMAL)
+        self.pane1.delete('1.0', tk.END)
+        
+        for title, content in article_data.items():
+            # 1. 조문 제목 삽입
+            self.pane1.insert(tk.END, f"--- {title} ---\n", 'article_title')
+            self.pane1.tag_config('article_title', font=('Helvetica', 10, 'bold'), background='#E0E0E0')
+            
+            # 2. 조문 내용 시작 위치 기록
+            start_mark = self.pane1.index(tk.END)
+            self.pane1.insert(tk.END, content + "\n\n")
+            
+            # 3. 링크 분석 및 태그 적용
+            links = analyzer.extract_links(content, current_law_full_name)
+            
+            for link in links:
+                # 텍스트 위젯 내의 절대 인덱스 계산
+                # start_mark(예: "3.0")에서 +N글자 이동한 위치 계산
+                s_idx = f"{start_mark} + {link['start']} chars"
+                e_idx = f"{start_mark} + {link['end']} chars"
+                
+                # 고유 태그 이름 생성 (이벤트 바인딩용)
+                tag_name = f"link_{title}_{link['start']}"
+                
+                # 태그 추가 (시각 효과 + 이벤트용)
+                self.pane1.tag_add("hyperlink", s_idx, e_idx) # 파란색 스타일
+                self.pane1.tag_add(tag_name, s_idx, e_idx)    # 개별 클릭 이벤트
+                
+                # 클릭 이벤트 바인딩 (대상 법률과 조문을 콜백으로 전달)
+                # 주의: lambda의 late binding 문제를 피하기 위해 기본값 인자 사용
+                self.pane1.tag_bind(tag_name, "<Button-1>", 
+                    lambda event, la=link['law_abbr'], art=link['article']: link_click_callback(la, art))
+
+        self.pane1.config(state=tk.DISABLED)
+        
+    # 창 2, 3 업데이트용 함수 (링크 기능 포함)
+    def update_pane_with_link(self, pane_num, header, content, analyzer, law_full_name, link_click_callback):
+        target_pane = self.pane2 if pane_num == 2 else self.pane3
+        
+        target_pane.config(state=tk.NORMAL)
+        target_pane.delete('1.0', tk.END)
+        target_pane.insert(tk.END, header + "\n\n", 'header')
+        target_pane.tag_config('header', font=('Helvetica', 10, 'italic'), foreground='red')
+        
+        # 내용이 없으면 종료
+        if not content:
+             target_pane.config(state=tk.DISABLED)
+             return
+
+        # 내용 삽입 위치 기록
+        start_mark = target_pane.index(tk.END)
+        target_pane.insert(tk.END, content)
+        
+        # 링크 분석 및 태그 (위와 동일한 로직)
+        links = analyzer.extract_links(content, law_full_name)
+        for link in links:
+            s_idx = f"{start_mark} + {link['start']} chars"
+            e_idx = f"{start_mark} + {link['end']} chars"
+            tag_name = f"link_{pane_num}_{link['start']}"
+            
+            target_pane.tag_add("hyperlink", s_idx, e_idx)
+            target_pane.tag_add(tag_name, s_idx, e_idx)
+            target_pane.tag_bind(tag_name, "<Button-1>", 
+                lambda event, la=link['law_abbr'], art=link['article']: link_click_callback(la, art))
+
+        target_pane.config(state=tk.DISABLED)
+
+    # 스크롤 이동 기능 (중요!)
+    def scroll_to_article(self, pane_num, article_title):
+        target_pane = self.pane2 if pane_num == 2 else self.pane3
+        
+        # 텍스트 위젯에서 조문 제목 검색
+        search_res = target_pane.search(article_title, "1.0", stopindex=tk.END)
+        if search_res:
+            # 해당 위치가 보이도록 스크롤 이동
+            target_pane.see(search_res)
+            # 하이라이트 (선택사항)
+            line_end = f"{search_res} lineend"
+            target_pane.tag_add("highlight", search_res, line_end)
+            target_pane.tag_config("highlight", background="yellow")

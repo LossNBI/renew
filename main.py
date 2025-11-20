@@ -43,11 +43,15 @@ class LawBrowserApp:
         # 1. 메인 레이아웃 생성
         self.ui.create_main_layout(self.on_article_click)
         
-        # 2. 창 1에 데이터 표시
+        # UI 표시 호출 변경 (analyzer와 콜백 전달)
         law_data = self.parser.laws.get(current_law_abbr, {}) 
-        self.ui.display_main_law(law_data.get('조문', {}))
-        
-        # 3. 이미지 목록 표시
+        self.ui.display_main_law(
+            law_data.get('조문', {}), 
+            self.analyzer, 
+            self.current_law_full_name, 
+            self.on_link_click_pane1 # 1번 창 클릭 핸들러
+        )
+
         # 2. 중복 호출 수정: 한 번만 호출하고 필요한 모든 인자를 전달합니다.
         image_list = self.parser.get_law_images(current_law_abbr)
         self.ui.display_law_images(law_full_name, self.config_manager.get_data_dir(), image_list)
@@ -128,6 +132,58 @@ class LawBrowserApp:
             
         messagebox.showinfo("데이터 관리", message)
         return success
+    
+    # 1번 창의 링크를 클릭했을 때 (2번 창을 업데이트)
+    def on_link_click_pane1(self, target_law_abbr, target_article):
+        # 1. 대상 법률 전체 이름 찾기
+        all_dbs = self.config_manager.get_databases()
+        target_law_full_name = [k for k, v in all_dbs.items() if v == target_law_abbr][0]
+        
+        # 2. 파일 로드 (없으면 로드)
+        if not self.parser.load_law(target_law_full_name):
+            return
+
+        # 3. 2번 창에 해당 법률의 '전체 내용' 표시 (법제처처럼 전체 맥락을 보여주기 위해)
+        # 만약 특정 조문만 보여주고 싶다면 parser에서 get_article_content만 쓰면 됨.
+        # 여기서는 '사이트처럼' 보이게 전체를 로드하고 스크롤하는 방식을 택함.
+        
+        # (옵션 A) 전체 로드 방식
+        full_content_dict = self.parser.laws.get(target_law_abbr, {}).get('조문', {})
+        full_text = ""
+        for t, c in full_content_dict.items():
+            full_text += f"--- {t} ---\n{c}\n\n"
+            
+        header = f"참조된 법률: {target_law_full_name} > {target_article}"
+        
+        self.ui.update_pane_with_link(
+            2, header, full_text, self.analyzer, target_law_full_name, self.on_link_click_pane2
+        )
+        
+        # 4. 중요: 해당 조문 위치로 스크롤 이동
+        self.ui.scroll_to_article(2, f"--- {target_article} ---") # 파서의 포맷에 맞춰 검색
+
+    # 2번 창의 링크를 클릭했을 때 (3번 창을 업데이트)
+    def on_link_click_pane2(self, target_law_abbr, target_article):
+        # 로직은 pane1과 거의 동일, 대상이 pane3
+        all_dbs = self.config_manager.get_databases()
+        target_law_full_name = [k for k, v in all_dbs.items() if v == target_law_abbr][0]
+        
+        if not self.parser.load_law(target_law_full_name): return
+
+        full_content_dict = self.parser.laws.get(target_law_abbr, {}).get('조문', {})
+        full_text = ""
+        for t, c in full_content_dict.items():
+            full_text += f"--- {t} ---\n{c}\n\n"
+
+        header = f"2차 참조: {target_law_full_name} > {target_article}"
+        
+        # 3번 창 업데이트 (더 이상의 링크 클릭은 처리 안 함 -> None 전달 or 핸들러 추가)
+        self.ui.update_pane_with_link(
+            3, header, full_text, self.analyzer, target_law_full_name, lambda a,b: None
+        )
+        
+        # 스크롤 이동
+        self.ui.scroll_to_article(3, f"--- {target_article} ---")
 
 
 if __name__ == '__main__':
