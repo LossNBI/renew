@@ -41,14 +41,10 @@ class LawParser:
     def load_law(self, full_name):
         """법률 전체 이름으로 파일을 로드하고 파싱합니다."""
         law_abbr = self.get_law_abbr(full_name)
-        if not law_abbr:
-             return False
-             
-        if law_abbr in self.laws:
-            return True
+        if not law_abbr: return False
+        if law_abbr in self.laws: return True
 
         file_path = os.path.join(self.data_dir, f"{law_abbr}.txt")
-        
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read().strip()
@@ -56,46 +52,50 @@ class LawParser:
             print(f"Error: File not found at {file_path}")
             return False
 
-        # 조문 제목 및 내용 분리 정규식: 제1조(목적), 제1조의2(정의) 등을 분리
-        # 그룹 1: 제O조(제목) 형식, 그룹 2: 제O조 형식 (장/절 제목 분리를 위해 사용)
+        # ---------------------------------------------------------
+        # 🌟 핵심 수정: 정규식 패턴에 '부칙'을 추가합니다.
+        # 그룹 1: 제O조(제목)
+        # 그룹 2: 제O조 (제목 없는 경우)
+        # 그룹 3: 부칙 <...> (부칙 헤더 감지)
+        # ---------------------------------------------------------
         article_pattern = re.compile(
-            r'\s*(제\d+조(?:\s*의\s*\d*)?\s*\(.*?\))|\s*(제\d+조\s*(?:[^\(\s]*)\s*)', 
+            r'\s*(제\d+조(?:\s*의\s*\d*)?\s*\(.*?\))|'  # 그룹 1: 제1조(목적)
+            r'\s*(제\d+조\s*(?:[^\(\s]*)\s*)|'          # 그룹 2: 제1조
+            r'\s*(부\s*칙\s*(?:<.*?>)?)\s*',            # 그룹 3: 부칙 <개정 2024...>
             re.MULTILINE
         )
         
         parsed_articles = {}
         parts = re.split(article_pattern, content)
         
-        current_article_title = ""
+        current_title = ""
         current_content_buffer = []
         
         for part in parts:
-            if not part or part.isspace():
-                continue
-            
+            if not part or part.isspace(): continue
             part = part.strip()
             
-            # 조문 제목인 경우
-            if re.fullmatch(r'제\d+조(?:\s*의\s*\d*)?\s*\(.*?\)', part) or re.fullmatch(r'제\d+조\s*(?:[^\(\s]*)\s*', part):
-                # 이전 조문 내용 저장
-                if current_article_title and current_content_buffer:
-                    parsed_articles[current_article_title] = "\n".join(current_content_buffer)
+            # 1. 조문 제목 또는 부칙 헤더인 경우
+            if (re.fullmatch(r'제\d+조(?:\s*의\s*\d*)?\s*\(.*?\)', part) or 
+                re.fullmatch(r'제\d+조\s*(?:[^\(\s]*)\s*', part) or
+                part.startswith("부칙") or part.startswith("부 칙")): # 부칙 감지
                 
-                # 새 조문 제목 설정 및 버퍼 초기화
-                current_article_title = part
+                # 이전 내용 저장
+                if current_title and current_content_buffer:
+                    parsed_articles[current_title] = "\n".join(current_content_buffer)
+                
+                # 새 제목 설정 (부칙의 경우 구분을 명확히 하기 위해 약간 변형 가능)
+                current_title = part
                 current_content_buffer = []
             
-            # 내용인 경우 (제목으로 분류되지 않은 모든 텍스트)
+            # 2. 내용인 경우
             else:
                 current_content_buffer.append(part)
 
-        # 마지막 조문 내용 저장
-        if current_article_title and current_content_buffer:
-            parsed_articles[current_article_title] = "\n".join(current_content_buffer)
+        # 마지막 내용 저장
+        if current_title and current_content_buffer:
+            parsed_articles[current_title] = "\n".join(current_content_buffer)
 
-        # 3. 불필요한 임시 파싱 라인 제거
-        
-        # 이미지 매핑
         image_map = self._map_images_to_law(law_abbr)
         
         self.laws[law_abbr] = {
@@ -104,6 +104,35 @@ class LawParser:
             '이미지': image_map 
         }
         return True
+
+    def _clean_articles(self, articles):
+        """조문 및 부칙 내용 정리"""
+        cleaned = {}
+        current_header = ""
+        
+        for key, value in articles.items():
+            value = value.strip()
+            
+            # 조문도 아니고 부칙도 아닌 것 (장/절 제목 등)
+            # 🌟 수정: '부칙'으로 시작하는 키는 헤더로 취급하지 않고 본문으로 넘깁니다.
+            is_article = re.match(r'제\d+조(?:\s*의\s*\d+)?', key)
+            is_addenda = key.startswith("부칙") or key.startswith("부 칙")
+            
+            if not is_article and not is_addenda:
+                current_header += key + "\n" + value + "\n"
+                continue
+            
+            # 조문이나 부칙인 경우
+            if current_header:
+                cleaned[key] = current_header + "\n" + value
+                current_header = ""
+            else:
+                cleaned[key] = value
+        
+        if current_header:
+            cleaned['기타_헤더'] = current_header
+
+        return cleaned
 
     # --- 2. 중복된 함수 중 하나를 제거하고 남은 함수에 주석 추가 ---
     def _map_images_to_law(self, law_abbr):
@@ -128,31 +157,6 @@ class LawParser:
              image_map['ALL'] = related_images
 
         return image_map
-
-    def _clean_articles(self, articles):
-        """조문 내용에서 불필요한 공백을 정리하고 장/절을 조문에 포함시킵니다."""
-        cleaned = {}
-        current_header = ""
-        
-        for key, value in articles.items():
-            value = value.strip()
-            # 조문 제목이 아닌 경우 (장/절 제목 또는 기타 텍스트)
-            if not re.match(r'제\d+조(?:\s*의\s*\d+)?', key):
-                current_header += key + "\n" + value + "\n"
-                continue
-            
-            # 조문 제목인 경우
-            if current_header:
-                cleaned[key] = current_header + "\n" + value
-                current_header = ""
-            else:
-                cleaned[key] = value
-        
-        # 제목이 없는 장/절 처리 (파일 시작이나 끝에 있을 경우)
-        if current_header:
-            cleaned['기타_헤더'] = current_header
-
-        return cleaned
 
     def get_article_content(self, law_abbr, article_title):
         """특정 법률의 조문 내용을 반환합니다."""
