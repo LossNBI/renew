@@ -1,0 +1,21 @@
+{
+  "DATA_DIR": "data",
+  "DATABASES": {
+    "세무사법": "tax_law",
+    "개발이익환수에 관한 법률": "dev_law",
+    "부동산 가격공시에 관한 법률": "real_law",
+    "소득세법": "inc_law",
+    "법인세법": "cor_law",
+    "공인회계사법": "cer_law",
+    "변호사법": "law_law",
+    "조세범 처벌법": "pun_law",
+    "조세범 처벌절차법": "pro_law",
+    "국세기본법": "bas_law",
+    "국가공무원법": "gov_law",
+    "민법": "min_law",
+    "형법": "cri_law"
+  },
+  "IMAGE_FOLDERS": {
+    "inc_law": "inc_law_png"
+  }
+}
