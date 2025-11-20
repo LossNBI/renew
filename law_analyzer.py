@@ -1,7 +1,7 @@
 # law_analyzer.py
 
 import re
-# import config_manager # main.py에서 주입받으므로 제거 가능하거나 유지
+import config_manager
 
 class LawAnalyzer:
     def __init__(self, parser, config_manager_instance):
@@ -29,6 +29,10 @@ class LawAnalyzer:
             is_this_law = match.group(2)
             article_ref_full = match.group(3)
             
+            # 매칭은 되었으나 내용이 비어있는 경우 건너뜀 (안전장치)
+            if not article_ref_full and not law_name_ref:
+                continue
+
             target_law_abbr = None
             
             # 1. 외부 법률 참조
@@ -52,3 +56,10 @@ class LawAnalyzer:
                 })
                 
         return links
+    
+    # (기존 find_reference는 사용하지 않게 되지만 호환성을 위해 남겨둘 수 있음)
+    def find_reference(self, text, current_law_full_name=None):
+        links = self.extract_links(text, current_law_full_name)
+        if links:
+            return links[0]['law_abbr'], links[0]['article']
+        return None, None
