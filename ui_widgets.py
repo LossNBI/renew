@@ -1,5 +1,7 @@
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame, QSizePolicy
-from PyQt5.QtGui import QFont
+# ui_widgets.py
+
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame, QSizePolicy, QHBoxLayout
+from PyQt5.QtGui import QFont, QPalette, QColor
 from PyQt5.QtCore import pyqtSignal, Qt
 import re
 
@@ -99,6 +101,31 @@ class ArticleWidget(QWidget):
 
     def on_link_click(self, url):
         self.link_clicked.emit(url)
+
+class SectionSeparator(QWidget):
+    def __init__(self, title):
+        super().__init__()
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 30, 0, 10) # 위쪽 여백을 줘서 구분감 형성
+        
+        # 굵은 바 (왼쪽 데코레이션)
+        bar = QFrame()
+        bar.setFixedWidth(5)
+        bar.setFixedHeight(25)
+        bar.setStyleSheet("background-color: #2980b9;")
+        layout.addWidget(bar)
+        
+        # 텍스트
+        label = QLabel(title)
+        label.setFont(QFont("Malgun Gothic", 11, QFont.Bold))
+        label.setStyleSheet("color: #2980b9;")
+        layout.addWidget(label)
+        
+        layout.addStretch(1)
+        self.setLayout(layout)
+        
+        # 전체 배경색 (선택사항, 구분감을 더 주기 위해)
+        self.setStyleSheet("background-color: #f0f8ff;") # 아주 연한 하늘색
 
 # [수정] 호버 이벤트를 감지하는 ReferenceWidget
 class ReferenceWidget(QWidget):
