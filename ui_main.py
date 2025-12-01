@@ -1,14 +1,16 @@
+import os
+import time
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QComboBox, QScrollArea, QLabel, 
                              QSplitter, QTabWidget, QTextBrowser, QShortcut,
-                             QProgressDialog, QApplication) # QProgressDialog, QApplication 추가
-from PyQt5.QtGui import QKeySequence, QFont
+                             QProgressDialog, QApplication)
+from PyQt5.QtGui import QKeySequence, QFont 
 from PyQt5.QtCore import Qt
 
 from ui_windows import DetachedWindow
 from ui_search_bar import LawSearchBar
 from data_manager import LawDataManager
-from ui_widgets import ArticleWidget, ReferenceWidget, SectionSeparator # SectionSeparator 추가
+from ui_widgets import ArticleWidget, ReferenceWidget, SectionSeparator
 from ui_settings import MainSettingsDialog
 
 class LawViewerWindow(QMainWindow):
@@ -23,12 +25,15 @@ class LawViewerWindow(QMainWindow):
         self.search_matches = [] 
         self.current_match_idx = -1
         
+        # [핵심] 양방향 스크롤 무한 루프 방지용 잠금 장치
+        self.sync_lock = False
+        
         self.setup_ui()
         self.setup_shortcuts()
 
     def setup_ui(self):
         self.setWindowTitle("법률 뷰어 Pro (Expert)")
-        self.resize(1400, 900) # 창 크기 조금 키움
+        self.resize(1400, 900)
 
         self.tabs = QTabWidget()
         self.tabs.setTabsClosable(True)
@@ -43,7 +48,7 @@ class LawViewerWindow(QMainWindow):
     def create_main_viewer(self, parent_widget):
         layout = QVBoxLayout(parent_widget)
         
-        # --- 상단 바 ---
+        # 상단 바
         top = QHBoxLayout()
         self.btn_set = QPushButton(" ⚙ 설정")
         self.btn_set.clicked.connect(self.open_settings)
@@ -61,9 +66,9 @@ class LawViewerWindow(QMainWindow):
         top.addWidget(self.combo, 1)
         layout.addLayout(top)
 
-        # --- 스플리터 ---
+        # 스플리터
         splitter = QSplitter(Qt.Horizontal)
-        splitter.setHandleWidth(3) # 핸들 조금 더 두껍게
+        splitter.setHandleWidth(3) 
         splitter.setStyleSheet("QSplitter::handle { background-color: #BDC3C7; }")
 
         # [왼쪽 패널]
@@ -79,6 +84,8 @@ class LawViewerWindow(QMainWindow):
         self.left_layout = QVBoxLayout(self.left_content)
         self.left_layout.setAlignment(Qt.AlignTop)
         self.left_scroll.setWidget(self.left_content)
+        
+        # [좌측 스크롤 이벤트]
         self.left_scroll.verticalScrollBar().valueChanged.connect(self.on_left_scroll)
         left_layout.addWidget(self.left_scroll)
         splitter.addWidget(left_widget)
@@ -95,9 +102,12 @@ class LawViewerWindow(QMainWindow):
         self.right_content = QWidget()
         self.right_layout = QVBoxLayout(self.right_content)
         self.right_layout.setAlignment(Qt.AlignTop)
-        # 우측 배경색을 약간 회색조로 주어 구분감 향상
         self.right_scroll.setStyleSheet("background-color: #F9F9F9;") 
         self.right_scroll.setWidget(self.right_content)
+        
+        # [우측 스크롤 이벤트]
+        self.right_scroll.verticalScrollBar().valueChanged.connect(self.on_right_scroll)
+        
         right_layout.addWidget(self.right_scroll)
         splitter.addWidget(right_widget)
 
@@ -109,44 +119,117 @@ class LawViewerWindow(QMainWindow):
         self.shortcut_search = QShortcut(QKeySequence("Ctrl+F"), self)
         self.shortcut_search.activated.connect(self.search_bar.set_focus_input)
 
-    # --- [핵심 수정] 법률 로드 (로딩바 + 전체 로드) ---
+    # --- [1] 좌측 스크롤 이벤트 (Left -> Right Sync) ---
+    def on_left_scroll(self):
+        # 1. 스티키 헤더 처리 (항상 실행)
+        sy = self.left_scroll.verticalScrollBar().value()
+        curr_left_key = None
+        
+        for w in self.left_widgets:
+            if w.y() + w.height() > sy:
+                if self.sticky.text() != w.chapter:
+                    self.sticky.setText(w.chapter)
+                curr_left_key = w.article_key
+                break
+        
+        # 2. 동기화 로직 (잠금 상태면 실행 안함)
+        if self.sync_lock: return
+        if not curr_left_key: return
+
+        # 우측 패널에서 해당 키(SectionSeparator) 찾기
+        target_y = -1
+        for i in range(self.right_layout.count()):
+            item = self.right_layout.itemAt(i)
+            widget = item.widget()
+            if isinstance(widget, SectionSeparator) and widget.article_key == curr_left_key:
+                target_y = widget.y()
+                break
+        
+        if target_y != -1:
+            self.sync_lock = True  # 잠금! (우측 스크롤 이벤트가 반응하지 않게)
+            self.right_scroll.verticalScrollBar().setValue(target_y)
+            self.sync_lock = False # 해제
+
+    # --- [2] 우측 스크롤 이벤트 (Right -> Left Sync) ---
+    def on_right_scroll(self):
+        # 잠금 상태면 무시
+        if self.sync_lock: return
+
+        sy = self.right_scroll.verticalScrollBar().value()
+        
+        # 현재 화면 상단에 보이는 구분선(SectionSeparator) 찾기
+        found_key = None
+        for i in range(self.right_layout.count()):
+            item = self.right_layout.itemAt(i)
+            widget = item.widget()
+            # 화면 상단 근처(sy)에 있는 위젯 찾기
+            if widget and widget.y() + widget.height() > sy:
+                if isinstance(widget, SectionSeparator):
+                    found_key = widget.article_key
+                    break
+                # 만약 ReferenceWidget이라면, 그 위의 Separator를 찾아야 완벽하지만,
+                # 간단하게는 Separator가 보일 때만 이동해도 충분합니다.
+        
+        if not found_key: return
+
+        # 좌측 패널에서 해당 키(ArticleWidget) 찾기
+        target_y = -1
+        for w in self.left_widgets:
+            if w.article_key == found_key:
+                target_y = w.y()
+                break
+        
+        if target_y != -1:
+            self.sync_lock = True  # 잠금! (좌측 스크롤 이벤트가 반응하지 않게)
+            self.left_scroll.verticalScrollBar().setValue(target_y)
+            self.sync_lock = False # 해제
+
+    # --- [기존 load_law 등 나머지 코드는 동일] ---
     def load_law(self):
         law_name = self.combo.currentText()
         if not law_name: return
 
-        # UI 초기화
         self._clear_layout(self.left_layout)
         self._clear_layout(self.right_layout)
         self.left_widgets = []
         self.search_bar.clear_input()
         self.search_bar.set_count_text("0/0")
 
-        # 데이터 가져오기
         data = self.manager.get_parsed_data(law_name)
         if not data: return
 
-        total_steps = len(data) * 2 # 왼쪽 생성 + 오른쪽 검사
+        law_code = self.manager.config["DATABASES"].get(law_name)
+        img_folder_name = self.manager.config["IMAGE_FOLDERS"].get(law_code)
         
-        # [4. 로딩 다이얼로그 생성]
+        img_base_path = None
+        if img_folder_name:
+            img_base_path = os.path.join(self.manager.data_dir, img_folder_name)
+
+        total_steps = len(data) * 2 
+        
         progress = QProgressDialog("법률 데이터를 불러오는 중입니다...", "취소", 0, total_steps, self)
         progress.setWindowTitle("로딩 중")
         progress.setWindowModality(Qt.WindowModal)
-        progress.setMinimumDuration(0) # 즉시 표시
+        progress.setMinimumDuration(0) 
         progress.setValue(0)
 
-        # 1. 왼쪽 패널 생성
         for i, item in enumerate(data):
             if progress.wasCanceled(): break
             
-            w = ArticleWidget(item['chapter'], item['title'], item['content'], self.curr_font, self.curr_size)
+            w = ArticleWidget(
+                item['chapter'], 
+                item['title'], 
+                item['content'], 
+                self.curr_font, 
+                self.curr_size,
+                image_base_path=img_base_path
+            )
             w.link_clicked.connect(self.open_new_window)
             self.left_layout.addWidget(w)
             self.left_widgets.append(w)
             
             progress.setValue(i)
 
-        # 2. 오른쪽 패널 전체 생성 (순서대로)
-        # 왼쪽 위젯들을 순회하며 관련된게 있으면 구분선 넣고 추가
         current_step = len(data)
         has_any_ref = False
 
@@ -158,11 +241,10 @@ class LawViewerWindow(QMainWindow):
             
             if related:
                 has_any_ref = True
-                # [3. 확실한 구분선 추가]
-                sep = SectionSeparator(f"■ {item['title']} 관련 규정")
+                # SectionSeparator에 article_key 전달
+                sep = SectionSeparator(f"■ {item['title']} 관련 규정", article_key)
                 self.right_layout.addWidget(sep)
 
-                # 우선순위 정렬
                 order_map = {'I. 시행령': 1, 'II. 시행규칙': 2, 'III. 관련 조항': 3, 'IV. 타법 참조': 4}
                 related.sort(key=lambda x: order_map.get(x['type'], 99))
 
@@ -182,7 +264,6 @@ class LawViewerWindow(QMainWindow):
             lbl.setStyleSheet("color: gray; margin-top: 20px;")
             self.right_layout.addWidget(lbl)
         
-        # 마무리
         progress.setValue(total_steps)
         
         self.left_scroll.verticalScrollBar().setValue(0)
@@ -195,16 +276,11 @@ class LawViewerWindow(QMainWindow):
             widget = item.widget()
             if widget: widget.deleteLater()
 
-    # --- [수정] 링크 클릭 시 실제 데이터 연동 ---
     def open_new_window(self, link_text):
-        # 링크 텍스트: "「소득세법」" -> "소득세법"
         law_name = link_text.replace("「", "").replace("」", "")
-        
-        # 1. 컨텐츠 위젯 준비 (메인 윈도우와 비슷한 스크롤 구조)
         content_widget = QWidget()
         layout = QVBoxLayout(content_widget)
         
-        # 제목 표시
         lbl_title = QLabel(f"{law_name} (참조 뷰어)")
         lbl_title.setFont(QFont(self.curr_font, 14, QFont.Bold))
         lbl_title.setAlignment(Qt.AlignCenter)
@@ -219,49 +295,31 @@ class LawViewerWindow(QMainWindow):
         scroll.setWidget(scroll_content)
         layout.addWidget(scroll)
 
-        # 2. 데이터 로드 (로딩바 포함)
-        # 새 창 로딩을 위한 ProgressDialog
         data = self.manager.get_parsed_data(law_name)
         
         if not data:
-            # 데이터가 없거나 DB에 없는 법인 경우
             lbl_err = QLabel(f"'{law_name}' 데이터를 찾을 수 없습니다.\n(설정에서 해당 법률을 등록해주세요)")
             lbl_err.setAlignment(Qt.AlignCenter)
             scroll_layout.addWidget(lbl_err)
         else:
-            # 로딩바 표시 (부모는 None으로 해서 화면 중앙에)
             progress = QProgressDialog(f"{law_name} 불러오는 중...", "취소", 0, len(data), self)
             progress.setWindowModality(Qt.WindowModal)
             progress.show()
             
             for i, item in enumerate(data):
                 if progress.wasCanceled(): break
-                # 링크 안에서도 또 링크를 탈 수 있게 ArticleWidget 재사용
                 w = ArticleWidget(item['chapter'], item['title'], item['content'], self.curr_font, self.curr_size)
-                w.link_clicked.connect(self.open_new_window) # 재귀적 링크 열기 지원
+                w.link_clicked.connect(self.open_new_window) 
                 scroll_layout.addWidget(w)
                 progress.setValue(i+1)
-                
-                # UI 반응성 확보
                 QApplication.processEvents()
 
-        # 3. 새 창 띄우기
         new_window = DetachedWindow(law_name, content_widget, self)
         new_window.resize(600, 800)
         new_window.closed_signal.connect(self.cleanup_closed_window)
         new_window.show()
         self.detached_windows.append(new_window)
 
-    # --- 스크롤 이벤트 (우측 패널 갱신 로직 제거됨) ---
-    def on_left_scroll(self):
-        sy = self.left_scroll.verticalScrollBar().value()
-        for w in self.left_widgets:
-            if w.y() + w.height() > sy:
-                if self.sticky.text() != w.chapter:
-                    self.sticky.setText(w.chapter)
-                break
-    
-    # ... (run_search, next_search, prev_search 등 검색 로직은 기존 유지) ...
     def run_search(self, query=None):
         if query is None: query = self.search_bar.get_text()
         self.search_matches = []
@@ -302,7 +360,6 @@ class LawViewerWindow(QMainWindow):
         target = self.left_widgets[widget_idx]
         self.left_scroll.verticalScrollBar().setValue(target.y())
 
-    # --- 호버 이벤트 ---
     def on_ref_hover_enter(self, target_text):
         for w in self.left_widgets:
             w.set_highlight(w.current_search_query, hover_target=target_text)
@@ -310,8 +367,7 @@ class LawViewerWindow(QMainWindow):
     def on_ref_hover_leave(self):
         for w in self.left_widgets:
             w.set_highlight(w.current_search_query, hover_target="")
-            
-    # ... (나머지 탭, 설정 관련 함수 유지) ...
+
     def detach_tab(self, index):
         if index < 0: return 
         title = self.tabs.tabText(index)
@@ -335,15 +391,11 @@ class LawViewerWindow(QMainWindow):
         self.curr_font = family
         self.curr_size = size
         for w in self.left_widgets: w.set_custom_font(family, size)
-        # 우측 패널도 갱신 필요 (전체 로드된 위젯 순회)
-        # QVBoxLayout에는 children() 대신 itemAt으로 접근해야 함
         for i in range(self.right_layout.count()):
             item = self.right_layout.itemAt(i)
             if item.widget() and isinstance(item.widget(), ReferenceWidget):
                 item.widget().setFont(QFont(family, size)) 
-                # ReferenceWidget 내부에 set_custom_font가 없으므로 setFont 사용 혹은 별도 구현 필요
-                # 간단하게는 다시 로드(load_law)를 호출하는게 가장 깔끔함
-        self.load_law() # 폰트 변경 시 전체 리로딩 (안전함)
+        self.load_law() 
 
     def refresh_combo(self):
         curr = self.combo.currentText()
