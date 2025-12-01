@@ -2,7 +2,7 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QComboBox, QScrollArea, QLabel, 
                              QSplitter, QTabWidget, QTextBrowser, QShortcut,
                              QProgressDialog, QApplication) # QProgressDialog, QApplication 추가
-from PyQt5.QtGui import QKeySequence
+from PyQt5.QtGui import QKeySequence, QFont
 from PyQt5.QtCore import Qt
 
 from ui_windows import DetachedWindow
