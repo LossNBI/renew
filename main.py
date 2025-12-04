@@ -1,8 +1,6 @@
-# main.py
-
 import sys
 from PyQt5.QtWidgets import QApplication
-from ui_main import LawViewerWindow
+from ui_main_window import LawViewerWindow
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
