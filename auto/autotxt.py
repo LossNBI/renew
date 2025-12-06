@@ -2,137 +2,232 @@ import os
 import shutil
 import win32com.client as win32
 from bs4 import BeautifulSoup
+from urllib.parse import unquote
+import tkinter as tk
+from tkinter import filedialog, messagebox
+import threading
 
-def hwp_to_text_with_images(hwp_path, output_folder, image_prefix="cor_law_pres"):
-    """
-    hwp_path: 원본 한글 파일 경로 (반드시 .hwp 파일이어야 함)
-    output_folder: 결과물이 저장될 폴더
-    image_prefix: 저장될 이미지 파일의 접두사
-    """
-    
-    # 1. 경로 설정 및 폴더 생성
+
+def hwp_to_text_with_images(hwp_path, output_folder, image_prefix, log_callback=None):
+
+    def log(msg):
+        if log_callback:
+            log_callback(msg)
+        print(msg)
+
+    # 1. 경로 확인
     hwp_path = os.path.abspath(hwp_path)
     output_folder = os.path.abspath(output_folder)
-    
-    # 파일이 실제로 존재하는지 체크
+
     if not os.path.isfile(hwp_path):
-        print(f"오류: 입력 경로가 파일이 아닙니다. 경로를 확인해주세요: {hwp_path}")
+        log(f"❌ 파일을 찾을 수 없습니다: {hwp_path}")
         return
 
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
-        
-    # 임시 HTML 파일 경로
+
     temp_html_path = os.path.join(output_folder, "temp_export.html")
 
-    # 2. 한글 프로그램 실행 및 파일 열기
-    print("한글 프로그램을 실행 중입니다...")
+    # 2. 한글 실행 → HTML 변환
+    log(f"🚀 변환 시작: {os.path.basename(hwp_path)}")
     try:
         hwp = win32.gencache.EnsureDispatch("HWPFrame.HwpObject")
-        hwp.RegisterModule("FilePathCheckDLL", "FilePathCheckerModule") # 보안 팝업 승인
-    except Exception as e:
-        print(f"오류: 한글 프로그램을 실행할 수 없습니다. {e}")
-        return
-
-    try:
+        hwp.RegisterModule("FilePathCheckDLL", "FilePathCheckerModule")
         hwp.Open(hwp_path)
-        # 3. HTML로 저장
-        hwp.SaveAs(temp_html_path, "HTML") 
+        hwp.SaveAs(temp_html_path, "HTML")
         hwp.Quit()
-        print("HTML 변환 완료. 데이터 추출을 시작합니다...")
     except Exception as e:
-        print(f"파일 변환 중 오류 발생: {e}")
-        hwp.Quit()
+        log(f"❌ 한글 오류: {e}")
         return
 
-    # 4. HTML 파싱하여 텍스트 및 이미지 처리
-    files_dir_name = "temp_export.files" 
-    files_dir_path = os.path.join(output_folder, files_dir_name)
-    
-    if not os.path.exists(files_dir_path):
-        files_dir_name = "temp_export_files"
-        files_dir_path = os.path.join(output_folder, files_dir_name)
-
-    # === [수정 포인트 1] 인코딩을 cp949로 변경 (안전하게 try-except 사용) ===
+    # 3. HTML 파싱
     soup = None
-    try:
-        with open(temp_html_path, "r", encoding="cp949") as f:
-            soup = BeautifulSoup(f, "html.parser")
-    except UnicodeDecodeError:
-        # 혹시 utf-8로 저장된 경우를 대비한 예외 처리
-        with open(temp_html_path, "r", encoding="utf-8") as f:
-            soup = BeautifulSoup(f, "html.parser")
-    # ===================================================================
+    for enc in ["cp949", "utf-8"]:
+        try:
+            with open(temp_html_path, "r", encoding=enc) as f:
+                try:
+                    soup = BeautifulSoup(f, "lxml")
+                except:
+                    soup = BeautifulSoup(f, "html.parser")
+            log(f"✔ HTML 파싱 성공 (인코딩 {enc})")
+            break
+        except:
+            continue
 
-    final_text_lines = []
+    if soup is None:
+        log("❌ HTML 파일 파싱 실패")
+        return
+
+    # 4. 이미지 폴더 찾기
+    files_dir_1 = os.path.join(output_folder, "temp_export.files")
+    files_dir_2 = os.path.join(output_folder, "temp_export_files")
+
+    if os.path.exists(files_dir_1):
+        files_dir = files_dir_1
+    elif os.path.exists(files_dir_2):
+        files_dir = files_dir_2
+    else:
+        files_dir = output_folder
+        log("ℹ️ 이미지 별도 폴더 없음 → 현재 폴더 사용")
+
+    log(f"📂 이미지 폴더: {files_dir}")
+
+    # 5. 본문 + 이미지 추출
+    final_lines = []
     img_counter = 1
+    
+    # [수정 1] 삭제할 원본 파일 목록을 담을 리스트 생성
+    processed_original_files = [] 
 
-    # 본문 내용을 순서대로 탐색
-    if soup and soup.body:
-        for element in soup.body.descendants:
-            if element.name == 'img':
-                # 이미지 태그 발견 시
-                original_img_name = element.get('src')
-                # src가 없는 경우 패스
-                if not original_img_name:
+    log("📸 이미지 추출 중...")
+
+    if soup.body:
+        for node in soup.body.descendants:
+
+            # 이미지 태그
+            if node.name:
+                tag = node.name.lower()
+                src = None
+
+                if tag == "img":
+                    src = node.get("src")
+                elif tag == "v:imagedata":
+                    src = node.get("src")
+
+                if src:
+                    src = unquote(src)
+                    original_name = os.path.basename(src)
+                    original_path = os.path.join(files_dir, original_name)
+
+                    if os.path.exists(original_path):
+                        ext = os.path.splitext(original_name)[1]
+                        if not ext:
+                            ext = ".png"
+
+                        new_name = f"{image_prefix}_{img_counter:02d}{ext}"
+                        new_path = os.path.join(output_folder, new_name)
+
+                        # 복사 수행
+                        shutil.copy2(original_path, new_path)
+                        
+                        # [수정 2] 원본 경로를 삭제 목록에 추가
+                        processed_original_files.append(original_path)
+
+                        log(f"  → 이미지 변환: {original_name} → {new_name}")
+                        final_lines.append(f"[IMAGE: {new_name}]")
+
+                        img_counter += 1
+
                     continue
-                    
-                ext = os.path.splitext(original_img_name)[1]
-                
-                # 새 이미지 이름 생성
-                new_img_name = f"{image_prefix}_{img_counter:02d}{ext}"
-                new_img_path = os.path.join(output_folder, new_img_name)
-                
-                # HTML 내 src는 보통 상대경로이므로 파일명만 추출해서 결합
-                original_img_filename = os.path.basename(original_img_name)
-                original_img_full_path = os.path.join(files_dir_path, original_img_filename)
-                
-                if os.path.exists(original_img_full_path):
-                    # 파일 이동 (덮어쓰기 허용을 위해 move 대신 copy 후 remove 추천하거나 shutil.move 사용)
-                    # 여기서는 안전하게 복사 후 삭제 방식 사용 (shutil.move는 타겟 존재시 에러날 수 있음)
-                    shutil.move(original_img_full_path, new_img_path)
-                    
-                    # 텍스트 리스트에 태그 추가
-                    tag_string = f"[IMAGE: {new_img_name}]"
-                    final_text_lines.append(tag_string)
-                    img_counter += 1
-                else:
-                    # 가끔 경로는 있는데 파일이 없는 경우가 있어 경고만 출력
-                    pass
 
-            elif element.name is None and element.strip():
-                # 텍스트 노드인 경우
-                text_content = element.strip()
-                if not final_text_lines or text_content != final_text_lines[-1]: 
-                    final_text_lines.append(text_content)
+            # 일반 텍스트
+            if node.name is None and str(node).strip():
+                text = str(node).strip()
+                final_lines.append(text)
 
-    # 5. 결과 텍스트 파일 저장
-    txt_output_path = os.path.join(output_folder, "cor_law_pres.txt")
-    
-    # 결과물은 범용성을 위해 utf-8로 저장하는 것을 추천하지만, 
-    # 기존 코드대로 cp949를 원하시면 encoding="cp949"로 유지하세요.
-    with open(txt_output_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(final_text_lines))
+    # 6. txt 저장
+    txt_path = os.path.join(output_folder, f"{image_prefix}.txt")
+    with open(txt_path, "w", encoding="utf-8") as f:
+        f.write("\n\n".join(final_lines))
 
-    # 6. 임시 파일 삭제
+    # 7. 임시 파일 및 원본 이미지 삭제 (정리 단계)
     try:
-        os.remove(temp_html_path)
-        if os.path.exists(files_dir_path):
-            shutil.rmtree(files_dir_path)
-    except:
-        pass
+        # 임시 HTML 파일 삭제
+        if os.path.exists(temp_html_path):
+            os.remove(temp_html_path)
 
-    print(f"\n작업 완료!")
-    print(f"텍스트 파일: {txt_output_path}")
-    print(f"이미지 저장 폴더: {output_folder}")
+        # [수정 3] 이미지 원본 삭제 로직 강화
+        if files_dir != output_folder and os.path.exists(files_dir):
+            # 이미지가 별도 하위 폴더(temp_export.files)에 있는 경우 폴더 통째로 삭제
+            shutil.rmtree(files_dir)
+        elif files_dir == output_folder:
+            # 이미지가 저장 폴더와 같은 곳에 풀린 경우 -> 기록해둔 원본 파일만 골라서 삭제
+            # set()을 사용하여 중복된 파일 경로(동일 이미지가 여러 번 쓰인 경우) 제거
+            for old_path in set(processed_original_files):
+                if os.path.exists(old_path):
+                    try:
+                        os.remove(old_path)
+                    except Exception as del_err:
+                        log(f"⚠️ 삭제 실패: {old_path} ({del_err})")
+                        
+    except Exception as e:
+        log(f"⚠️ 정리 중 오류 발생: {e}")
 
-# --- 실행 설정 ---
+    log("✔ 변환 완료!")
+    log(f"📝 텍스트 파일: {txt_path}")
+    log(f"🖼 추출된 이미지 개수: {img_counter - 1}")
+
+
+###########################################
+#             GUI 시작
+###########################################
+
+class App:
+    def __init__(self, root):
+        self.root = root
+        root.title("HWP → 텍스트 + 이미지 추출기")
+
+        self.root.geometry("500x450")
+
+        # 파일 선택
+        tk.Label(root, text="한글 파일 선택 (.hwp)").pack()
+        self.hwp_entry = tk.Entry(root, width=50)
+        self.hwp_entry.pack()
+        tk.Button(root, text="찾기", command=self.select_hwp).pack()
+
+        # 저장 폴더
+        tk.Label(root, text="저장 폴더 선택").pack()
+        self.dir_entry = tk.Entry(root, width=50)
+        self.dir_entry.pack()
+        tk.Button(root, text="찾기", command=self.select_folder).pack()
+
+        # 이미지 접두사
+        tk.Label(root, text="이미지 파일명 접두사").pack()
+        self.prefix_entry = tk.Entry(root, width=30)
+        self.prefix_entry.insert(0, "output")
+        self.prefix_entry.pack()
+
+        # 실행 버튼
+        tk.Button(root, text="변환 실행", command=self.run_convert).pack(pady=10)
+
+        # 로그창
+        self.log_box = tk.Text(root, height=12, width=60)
+        self.log_box.pack()
+
+    def log(self, msg):
+        self.log_box.insert(tk.END, msg + "\n")
+        self.log_box.see(tk.END)
+
+    def select_hwp(self):
+        file_path = filedialog.askopenfilename(filetypes=[("HWP files", "*.hwp")])
+        if file_path:
+            self.hwp_entry.delete(0, tk.END)
+            self.hwp_entry.insert(0, file_path)
+
+    def select_folder(self):
+        folder = filedialog.askdirectory()
+        if folder:
+            self.dir_entry.delete(0, tk.END)
+            self.dir_entry.insert(0, folder)
+
+    def run_convert(self):
+        hwp_path = self.hwp_entry.get()
+        output_folder = self.dir_entry.get()
+        prefix = self.prefix_entry.get()
+
+        if not hwp_path or not output_folder:
+            messagebox.showerror("오류", "파일과 저장 폴더를 선택하세요.")
+            return
+
+        # 스레드로 실행 → GUI 프리징 방지
+        threading.Thread(
+            target=hwp_to_text_with_images,
+            args=(hwp_path, output_folder, prefix, self.log),
+            daemon=True
+        ).start()
+
+
 if __name__ == "__main__":
-    # === [수정 포인트 2] 파일 경로를 구체적인 파일명까지 적어주세요 ===
-    # 예: r"D:\code\renew\auto\test.hwp"
-    input_hwp = r"D:\code\renew\auto\cor_law_pres.hwp"  
-    
-    output_dir = r"D:\code\renew\auto\output" 
-    user_prefix = "cor_law_pres"
-    
-    hwp_to_text_with_images(input_hwp, output_dir, user_prefix)
+    root = tk.Tk()
+    App(root)
+    root.mainloop()

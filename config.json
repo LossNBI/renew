@@ -17,6 +17,19 @@
     "형법": "cri_law"
   },
   "IMAGE_FOLDERS": {
-    "inc_law": "inc_law_png"
+    "tax_law": "inc_law_png",
+    "dev_law": "inc_law_png",
+    "real_law": "inc_law_png",
+    "tra_law": "inc_law_png",
+    "inc_law": "inc_law_png",
+    "cor_law": "inc_law_png",
+    "cer_law": "cer_law_png",
+    "law_law": "law_law_png",
+    "pun_law": "pun_law_png",
+    "pro_law": "pro_law_png",
+    "bas_law": "bas_law_png",
+    "gov_law": "gov_law_png",
+    "min_law": "min_law_png",
+    "cri_law": "cri_law_png"
   }
 }

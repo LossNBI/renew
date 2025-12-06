@@ -4,7 +4,7 @@ from PyQt5.QtCore import pyqtSignal, Qt
 import re
 import os
 
-# ... (ArticleWidget, SectionSeparator는 기존 코드 그대로 사용) ...
+# ArticleWidget, SectionSeparator는 기존 코드 그대로 유지
 class ArticleWidget(QWidget):
     link_clicked = pyqtSignal(str) 
 
@@ -127,7 +127,8 @@ class SectionSeparator(QWidget):
         self.setLayout(layout)
         self.setStyleSheet("background-color: #f0f8ff;")
 
-# --- [수정] ReferenceWidget (하이라이트 기능 추가) ---
+
+# --- [수정] ReferenceWidget (높이 짤림 방지) ---
 class ReferenceWidget(QWidget):
     hover_entered = pyqtSignal(str) 
     hover_left = pyqtSignal()
@@ -135,7 +136,6 @@ class ReferenceWidget(QWidget):
     def __init__(self, category, title, content, font_family="Malgun Gothic", font_size=10):
         super().__init__()
         self.target_key = ""
-        # 원본 데이터 저장
         self.plain_title = title
         self.plain_content = content
         self.search_query = ""
@@ -152,20 +152,24 @@ class ReferenceWidget(QWidget):
         lbl_cat.setStyleSheet("color: #d35400; font-weight: bold; font-size: 12px; border: none;")
         layout.addWidget(lbl_cat)
 
-        self.lbl_t = QLabel(title) # self로 변경
+        self.lbl_t = QLabel(title)
         self.lbl_t.setFont(QFont(font_family, font_size + 1, QFont.Bold))
         self.lbl_t.setWordWrap(True)
         self.lbl_t.setStyleSheet("border: none;")
-        self.lbl_t.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum)
-        self.lbl_t.setTextFormat(Qt.RichText) # RichText 허용
+        
+        # [수정] 높이 정책을 MinimumExpanding으로 변경 (적극적으로 늘어나도록)
+        self.lbl_t.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.MinimumExpanding)
+        self.lbl_t.setTextFormat(Qt.RichText)
         layout.addWidget(self.lbl_t)
 
         self.lbl_c = QLabel(content)
         self.lbl_c.setFont(QFont(font_family, font_size))
         self.lbl_c.setWordWrap(True)
         self.lbl_c.setStyleSheet("line-height: 1.5; color: #555555; border: none;")
-        self.lbl_c.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum)
-        self.lbl_c.setTextFormat(Qt.RichText) # RichText 허용
+        
+        # [수정] 높이 정책을 MinimumExpanding으로 변경
+        self.lbl_c.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.MinimumExpanding)
+        self.lbl_c.setTextFormat(Qt.RichText)
         layout.addWidget(self.lbl_c)
         
         line = QFrame()
@@ -173,8 +177,7 @@ class ReferenceWidget(QWidget):
         line.setStyleSheet("background-color: #E0E0E0;")
         layout.addWidget(line)
         self.setLayout(layout)
-    
-    # [추가] 하이라이트 처리 함수
+
     def set_highlight(self, query):
         self.search_query = query
         self.render_content()
@@ -183,7 +186,6 @@ class ReferenceWidget(QWidget):
         t_text = self.plain_title
         c_text = self.plain_content
         
-        # HTML 이스케이프
         t_text = t_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         c_text = c_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         
