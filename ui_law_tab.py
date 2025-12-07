@@ -140,6 +140,7 @@ class LawViewerWidget(QWidget):
         data = self.manager.get_parsed_data(law_name)
         if not data: return
 
+        # 이미지 경로 준비
         law_code = self.manager.config["DATABASES"].get(law_name)
         img_folder_name = self.manager.config["IMAGE_FOLDERS"].get(law_code)
         img_base_path = os.path.join(self.manager.data_dir, img_folder_name) if img_folder_name else None
@@ -151,6 +152,7 @@ class LawViewerWidget(QWidget):
         progress.setMinimumDuration(0) 
         progress.setValue(0)
 
+        # 왼쪽 패널 생성
         for i, item in enumerate(data):
             if progress.wasCanceled(): break
             w = ArticleWidget(item['chapter'], item['title'], item['content'], self.curr_font, self.curr_size, image_base_path=img_base_path)
@@ -162,6 +164,7 @@ class LawViewerWidget(QWidget):
         current_step = len(data)
         has_any_ref = False
 
+        # 오른쪽 패널 생성
         for item in data:
             if progress.wasCanceled(): break
             article_key = item['article_key']
@@ -174,7 +177,16 @@ class LawViewerWidget(QWidget):
                 related.sort(key=lambda x: order_map.get(x['type'], 99))
                 for r in related:
                     r_data = r['data']
-                    w = ReferenceWidget(r['type'], r_data['title'], r_data['content'], self.curr_font, self.curr_size)
+                    
+                    # [수정] ReferenceWidget 생성 시 image_base_path 전달
+                    w = ReferenceWidget(
+                        r['type'], 
+                        r_data['title'], 
+                        r_data['content'], 
+                        self.curr_font, 
+                        self.curr_size,
+                        image_base_path=img_base_path # 여기 추가됨!
+                    )
                     w.hover_entered.connect(self.on_ref_hover_enter)
                     w.hover_left.connect(self.on_ref_hover_leave)
                     self.right_layout.addWidget(w)
@@ -198,20 +210,26 @@ class LawViewerWidget(QWidget):
             widget = item.widget()
             if widget: widget.deleteLater()
 
-    # --- [검색] 왼쪽 ---
     def run_left_search(self, query=None):
         if query is None: query = self.search_bar_left.get_text()
         self.left_matches = []
         self.left_match_idx = -1
-        for w in self.left_widgets: w.set_highlight(query)
+        
+        # [최적화] 무조건 set_highlight 호출하지 않음
+        for i, widget in enumerate(self.left_widgets):
+            # 검색어가 있거나, 기존에 하이라이트가 되어있던 경우에만 갱신
+            has_text = query and (query in widget.title_text or query in widget.plain_content)
+            
+            if has_text:
+                widget.set_highlight(query)
+                self.left_matches.append(i)
+            else:
+                # 검색어 없거나 매칭 안되면 하이라이트 해제 (이미 해제 상태면 내부에서 무시됨)
+                widget.set_highlight("") 
         
         if not query:
             self.search_bar_left.set_count_text("0/0")
             return
-        
-        for i, widget in enumerate(self.left_widgets):
-            if query in widget.title_text or query in widget.plain_content:
-                self.left_matches.append(i)
         
         if self.left_matches:
             self.left_match_idx = 0
@@ -219,6 +237,36 @@ class LawViewerWidget(QWidget):
             self.move_to_left_match(self.left_match_idx)
         else:
             self.search_bar_left.set_count_text("0/0")
+
+    # --- [검색] 오른쪽 최적화 ---
+    def run_right_search(self, query=None):
+        if query is None: query = self.search_bar_right.get_text()
+        self.right_matches = []
+        self.right_match_idx = -1
+
+        for i in range(self.right_layout.count()):
+            item = self.right_layout.itemAt(i)
+            widget = item.widget()
+            if isinstance(widget, ReferenceWidget):
+                # [최적화] 텍스트가 있을 때만 갱신
+                has_text = query and (query in widget.plain_title or query in widget.plain_content)
+                
+                if has_text:
+                    widget.set_highlight(query)
+                    self.right_matches.append(widget)
+                else:
+                    widget.set_highlight("")
+        
+        if not query:
+            self.search_bar_right.set_count_text("0/0")
+            return
+
+        if self.right_matches:
+            self.right_match_idx = 0
+            self.update_right_search_ui()
+            self.move_to_right_match(self.right_match_idx)
+        else:
+            self.search_bar_right.set_count_text("0/0")
 
     def next_left_search(self):
         if not self.left_matches: return
@@ -239,31 +287,6 @@ class LawViewerWidget(QWidget):
         widget_idx = self.left_matches[idx]
         target = self.left_widgets[widget_idx]
         self.left_scroll.verticalScrollBar().setValue(target.y())
-
-    # --- [검색] 오른쪽 ---
-    def run_right_search(self, query=None):
-        if query is None: query = self.search_bar_right.get_text()
-        self.right_matches = []
-        self.right_match_idx = -1
-
-        for i in range(self.right_layout.count()):
-            item = self.right_layout.itemAt(i)
-            widget = item.widget()
-            if isinstance(widget, ReferenceWidget):
-                widget.set_highlight(query)
-                if query and (query in widget.plain_title or query in widget.plain_content):
-                    self.right_matches.append(widget)
-        
-        if not query:
-            self.search_bar_right.set_count_text("0/0")
-            return
-
-        if self.right_matches:
-            self.right_match_idx = 0
-            self.update_right_search_ui()
-            self.move_to_right_match(self.right_match_idx)
-        else:
-            self.search_bar_right.set_count_text("0/0")
 
     def next_right_search(self):
         if not self.right_matches: return
@@ -359,17 +382,15 @@ class LawViewerWidget(QWidget):
 
     def open_new_window(self, link_text):
         law_name = link_text.replace("「", "").replace("」", "")
-        # 여기서 LawViewerWidget을 재귀적으로 사용할 수도 있지만, 
-        # 간단하게 하려면 기존처럼 QScrollArea만 띄워도 됩니다.
-        # 기능의 일관성을 위해 LawViewerWidget을 새 창에 띄우는 것이 베스트입니다.
         
-        # 단순 뷰어 모드 (좌측 내용만 있는 형태)로 구현
         content_widget = QWidget()
         layout = QVBoxLayout(content_widget)
-        lbl = QLabel(f"{law_name} (상세 보기)")
-        lbl.setFont(QFont(self.curr_font, 14, QFont.Bold))
-        lbl.setAlignment(Qt.AlignCenter)
-        layout.addWidget(lbl)
+        
+        lbl_title = QLabel(f"{law_name} (상세 보기)")
+        lbl_title.setFont(QFont(self.curr_font, 14, QFont.Bold))
+        lbl_title.setAlignment(Qt.AlignCenter)
+        lbl_title.setStyleSheet("background-color: #ecf0f1; padding: 10px;")
+        layout.addWidget(lbl_title)
         
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -379,18 +400,46 @@ class LawViewerWidget(QWidget):
         scroll.setWidget(w_content)
         layout.addWidget(scroll)
 
+        # 1. 데이터 로드 (시행령/규칙도 처리됨)
         data = self.manager.get_parsed_data(law_name)
+        
+        # 2. [추가] 이미지 경로 찾기 로직
+        # 이름에서 " 시행령", " 시행규칙" 제거하여 Base Law 찾기
+        base_name = law_name.replace(" 시행령", "").replace(" 시행규칙", "")
+        law_code = self.manager.config["DATABASES"].get(base_name)
+        
+        img_base_path = None
+        if law_code:
+            img_folder_name = self.manager.config["IMAGE_FOLDERS"].get(law_code)
+            if img_folder_name:
+                img_base_path = os.path.join(self.manager.data_dir, img_folder_name)
+
         if data:
-            for item in data:
-                w = ArticleWidget(item['chapter'], item['title'], item['content'], self.curr_font, self.curr_size)
+            # 로딩바 표시
+            progress = QProgressDialog(f"{law_name} 불러오는 중...", "취소", 0, len(data), self)
+            progress.setWindowModality(Qt.WindowModal)
+            progress.show()
+
+            for i, item in enumerate(data):
+                if progress.wasCanceled(): break
+                
+                # [수정] image_base_path 전달
+                w = ArticleWidget(
+                    item['chapter'], 
+                    item['title'], 
+                    item['content'], 
+                    self.curr_font, 
+                    self.curr_size,
+                    image_base_path=img_base_path 
+                )
                 w.link_clicked.connect(self.open_new_window)
                 w_layout.addWidget(w)
+                progress.setValue(i+1)
+                QApplication.processEvents()
         else:
-            w_layout.addWidget(QLabel("데이터 없음"))
+            w_layout.addWidget(QLabel(f"'{law_name}' 데이터를 찾을 수 없습니다."))
 
         new_window = DetachedWindow(law_name, content_widget)
         new_window.resize(600, 800)
-        # cleanup은 상위 윈도우에서 관리하기 어려우므로 자체 처리하거나 생략
         new_window.show()
-        # 참조 유지를 위해 리스트에 추가
         self.detached_windows.append(new_window)

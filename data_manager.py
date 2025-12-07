@@ -18,7 +18,6 @@ class LawDataManager:
         if not os.path.exists(self.data_dir):
             os.makedirs(self.data_dir)
 
-        # 메모리 캐시
         self.parsed_cache = {} 
         self.reference_map = {} 
 
@@ -50,7 +49,6 @@ class LawDataManager:
             if os.path.exists(path): os.remove(path)
         self._save_config()
 
-    # --- [핵심 수정] 텍스트 파싱 로직 강화 ---
     def parse_text(self, text):
         lines = text.split('\n')
         parsed_dict = {} 
@@ -60,23 +58,14 @@ class LawDataManager:
         curr_lines = []
         
         re_chap = re.compile(r'^제\d+장\s')
-        
-        # [수정된 정규식]
-        # 1. (제 \d+ 조) : "제2조" 를 먼저 찾고
-        # 2. (?:\s*의\s*\d+)? : 그 뒤에 "의2" 가 붙을 수도 있고 아닐 수도 있음
-        # 결과적으로 "제2조"와 "제2조의2"를 모두 정확히 잡아냅니다.
         re_art = re.compile(r'^(제\s*\d+\s*조(?:\s*의\s*\d+)?)') 
 
         def save_buffer(chapter, title, lines):
             if not title: return
-            
             match = re_art.match(title)
             if not match: return
-            
-            # "제 2 조 의 2" -> "제2조의2" (공백 제거)
             raw_art_str = match.group(1)
             art_num = raw_art_str.replace(" ", "") 
-            
             content = '\n'.join(lines)
             
             if art_num in parsed_dict:
@@ -92,7 +81,6 @@ class LawDataManager:
         for line in lines:
             line = line.strip()
             if not line: continue
-            
             if re_chap.match(line):
                 curr_chap = line
             elif re_art.match(line):
@@ -103,25 +91,44 @@ class LawDataManager:
                 if curr_title: curr_lines.append(line)
         
         save_buffer(curr_chap, curr_title, curr_lines)
-        
         return list(parsed_dict.values())
 
-    # --- 외부 법령 추출 헬퍼 ---
     def _extract_external_article(self, law_code, target_article):
         path = os.path.join(self.data_dir, f"{law_code}.txt")
         if not os.path.exists(path): return None
-        
         with open(path, 'r', encoding='utf-8') as f:
             full_text = f.read()
-        
         parsed = self.parse_text(full_text)
         for p in parsed:
-            # target_article(제5조)과 p['article_key'](제5조) 비교
             if p['article_key'] == target_article:
                 return p
         return None
 
+    # --- [핵심 수정] 요청 이름에 따라 파일 분기 처리 ---
     def get_parsed_data(self, law_name):
+        # 1. 시행령 요청인 경우 (예: "소득세법 시행령")
+        if law_name.endswith(" 시행령"):
+            base_name = law_name.replace(" 시행령", "")
+            code = self.config["DATABASES"].get(base_name)
+            if code:
+                path = os.path.join(self.data_dir, f"{code}_pres.txt")
+                if os.path.exists(path):
+                    with open(path, 'r', encoding='utf-8') as f:
+                        return self.parse_text(f.read())
+            return [] # 파일 없거나 코드 없음
+
+        # 2. 시행규칙 요청인 경우 (예: "소득세법 시행규칙")
+        elif law_name.endswith(" 시행규칙"):
+            base_name = law_name.replace(" 시행규칙", "")
+            code = self.config["DATABASES"].get(base_name)
+            if code:
+                path = os.path.join(self.data_dir, f"{code}_rule.txt")
+                if os.path.exists(path):
+                    with open(path, 'r', encoding='utf-8') as f:
+                        return self.parse_text(f.read())
+            return []
+
+        # 3. 일반 법률 요청 (메인 화면용 - 전체 로드)
         code = self.config["DATABASES"].get(law_name)
         if not code: return []
         
@@ -150,12 +157,9 @@ class LawDataManager:
     def build_reference_map(self, main, pres, rule, current_law_name):
         self.reference_map = {}
         
-        # 1. 역참조 키워드 정규식
         keywords = [r"에\s*따른", r"에\s*따라", r"의\s*규정에\s*의한", r"의\s*규정에\s*의하여", r"에서", r"단서에\s*따른"]
         kw_pattern = "|".join(keywords)
         prefix_pattern = fr"(?:{re.escape(current_law_name)}|이\s*법|법)"
-        
-        # 조항 추출 패턴 (제2조의2 등)
         article_core = r"(제\d+조(?:의\s?\d+)?)"
         
         full_regex = re.compile(fr"{prefix_pattern}\s*{article_core}(?:\s*제\d+항)?\s*(?:{kw_pattern})")
@@ -174,10 +178,8 @@ class LawDataManager:
         add_ref(pres, 'I. 시행령')
         add_ref(rule, 'II. 시행규칙')
 
-        # 2. 관련 조항 (본문 -> 타 조항)
         db_names = list(self.config['DATABASES'].keys())
         law_names_pattern = "|".join([re.escape(n) for n in db_names] + [r"이\s*법", r"법"])
-        
         re_ref_generic = re.compile(fr"({law_names_pattern})?\s*(제\d+조(?:의\s?\d+)?)")
         
         main_dict = {m['article_key']: m for m in main}
@@ -191,7 +193,6 @@ class LawDataManager:
                 art_num_clean = art_num.replace(" ", "")
                 law_name = law_name.strip().replace(" ", "")
 
-                # 같은 법 참조
                 if not law_name or law_name in ["법", "이법", current_law_name.replace(" ", "")]:
                     if art_num_clean == target_key: continue
                     full_ref_key = f"same_{art_num_clean}"
@@ -205,7 +206,6 @@ class LawDataManager:
                         if not exists:
                             self.reference_map[target_key].append({'type': 'III. 관련 조항', 'data': main_dict[art_num_clean]})
                 
-                # 다른 법 참조
                 else:
                     if law_name in self.config["DATABASES"]:
                         law_code = self.config["DATABASES"][law_name]
