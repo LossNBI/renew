@@ -13,7 +13,6 @@ from data_manager import LawDataManager
 from ui_widgets import ArticleWidget, ReferenceWidget, SectionSeparator
 
 class LawViewerWidget(QWidget):
-    # ... (__init__, setup_ui 등 기존 코드 유지) ...
     def __init__(self, manager, parent=None):
         super().__init__(parent)
         self.manager = manager
@@ -31,10 +30,16 @@ class LawViewerWidget(QWidget):
         self.sync_lock = False
         self.last_sync_time = 0
         
+        self.right_widget_map = {} 
         self.detached_windows = []
+        
+        # 조항 키 추출용 정규식 (제n조의m 지원)
+        self.re_art_key = re.compile(r'.*?(제\s*\d+\s*조(?:\s*의\s*\d+)?)')
+
         self.setup_ui()
 
     def setup_ui(self):
+        # (기존 UI 레이아웃 코드와 완전히 동일)
         layout = QVBoxLayout(self)
         top = QHBoxLayout()
         self.combo = QComboBox()
@@ -47,7 +52,6 @@ class LawViewerWidget(QWidget):
         splitter.setHandleWidth(3) 
         splitter.setStyleSheet("QSplitter::handle { background-color: #BDC3C7; }")
 
-        # [1. 본문]
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         self.search_bar_left = LawSearchBar()
@@ -68,7 +72,6 @@ class LawViewerWidget(QWidget):
         left_layout.addWidget(self.left_scroll)
         splitter.addWidget(left_widget)
 
-        # [2. 참조]
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
         self.search_bar_right = LawSearchBar()
@@ -90,7 +93,6 @@ class LawViewerWidget(QWidget):
         right_layout.addWidget(self.right_scroll)
         splitter.addWidget(right_widget)
 
-        # [3. 심화]
         third_widget = QWidget()
         third_layout = QVBoxLayout(third_widget)
         self.search_bar_third = LawSearchBar()
@@ -131,13 +133,14 @@ class LawViewerWidget(QWidget):
         law_name = self.combo.currentText()
         if not law_name: return
 
-        self.setUpdatesEnabled(False) # 최적화용
+        self.setUpdatesEnabled(False)
 
         try:
             self._clear_layout(self.left_layout)
             self._clear_layout(self.right_layout)
             self._clear_layout(self.third_layout)
             self.left_widgets = []
+            self.right_widget_map = {} 
             
             for sb in [self.search_bar_left, self.search_bar_right, self.search_bar_third]:
                 sb.clear_input()
@@ -167,12 +170,13 @@ class LawViewerWidget(QWidget):
                 self.left_widgets.append(w)
                 current_step += 1
                 progress.setValue(current_step)
+                if i % 10 == 0: QApplication.processEvents()
 
             # 2. 오른쪽 & 심화 생성
             has_any_ref_right = False
             has_any_ref_third = False
 
-            for item in data:
+            for i, item in enumerate(data):
                 if progress.wasCanceled(): break
                 article_key = item['article_key']
                 related = self.manager.get_related_articles(article_key)
@@ -187,28 +191,25 @@ class LawViewerWidget(QWidget):
 
                     for r in related:
                         r_data = r['data']
-                        
-                        # [핵심] 하이라이트할 키 결정
-                        # 만약 "관련 조항"이나 "타법 참조"라면, 그 조항 번호("제17조")를 하이라이트 타겟으로 지정
-                        h_key = None
-                        if r['type'] in ['III. 관련 조항', 'IV. 타법 참조']:
-                            # r_data['article_key'] (예: 제17조)가 있으면 그것을 사용
-                            h_key = r_data.get('article_key')
-                            if not h_key: # 없으면 제목에서 추출 시도
-                                match = re.match(r'.*?(제\d+(?:의\d+)?조)', r_data['title'])
-                                if match: h_key = match.group(1).replace(" ", "")
+                        h_key = r_data.get('article_key')
+                        if not h_key:
+                            match = self.re_art_key.match(r_data['title'])
+                            if match: h_key = match.group(1).replace(" ", "")
 
                         w_right = ReferenceWidget(
                             r['type'], r_data['title'], r_data['content'], 
                             self.curr_font, self.curr_size, 
                             image_base_path=img_base_path,
-                            highlight_key=h_key # 여기서 전달!
+                            highlight_key=h_key 
                         )
                         w_right.hover_entered.connect(self.on_ref_hover_enter)
                         w_right.hover_left.connect(self.on_ref_hover_leave)
                         self.right_layout.addWidget(w_right)
+                        
+                        if w_right.article_key:
+                            self.right_widget_map[w_right.article_key] = w_right
 
-                        # --- 3차 패널 ---
+                        # 3차 생성
                         if r['type'] in ['III. 관련 조항', 'IV. 타법 참조']:
                             deep_key = w_right.article_key
                             if deep_key:
@@ -222,19 +223,17 @@ class LawViewerWidget(QWidget):
 
                                     for dr in filtered_deep:
                                         dr_data = dr['data']
-                                        
-                                        # 3차의 하이라이트 키: dr의 조항 번호
                                         dh_key = dr_data.get('article_key')
                                         if not dh_key:
-                                            match = re.match(r'.*?(제\d+(?:의\d+)?조)', dr_data['title'])
+                                            match = self.re_art_key.match(dr_data['title'])
                                             if match: dh_key = match.group(1).replace(" ", "")
 
                                         w_third = ReferenceWidget(
                                             dr['type'], dr_data['title'], dr_data['content'],
                                             self.curr_font, self.curr_size, 
                                             image_base_path=None, 
-                                            parent_key=deep_key, # 부모(2차) 위젯 찾기용
-                                            highlight_key=dh_key # 2차 위젯 내부 텍스트 하이라이트용
+                                            parent_key=deep_key, 
+                                            highlight_key=dh_key 
                                         )
                                         w_third.hover_entered.connect(self.on_third_hover_enter)
                                         w_third.hover_left.connect(self.on_third_hover_leave)
@@ -242,6 +241,7 @@ class LawViewerWidget(QWidget):
 
                 current_step += 1
                 progress.setValue(current_step)
+                if i % 10 == 0: QApplication.processEvents()
 
             if not has_any_ref_right: self._add_placeholder(self.right_layout, "관련 참조 내용이 없습니다.")
             if not has_any_ref_third: self._add_placeholder(self.third_layout, "심화 참조(법 조항)가 없습니다.")
@@ -270,7 +270,43 @@ class LawViewerWidget(QWidget):
             widget = item.widget()
             if widget: widget.deleteLater()
 
-    # --- 나머지 스크롤/검색/호버 로직은 기존 코드와 동일하여 생략하지 않고 다 넣습니다 (안정성을 위해) ---
+    # --- [호버 로직] ---
+
+    # 2차 -> 1차 (기존과 동일)
+    def on_ref_hover_enter(self, target_text):
+        for w in self.left_widgets: 
+            w.set_highlight(w.current_search_query, hover_target=target_text)
+
+    def on_ref_hover_leave(self):
+        for w in self.left_widgets: 
+            w.set_highlight(w.current_search_query, hover_target="")
+
+    # 3차 -> 2차 (수정됨: target_text는 '제10조' 같은 찾을 단어)
+    def on_third_hover_enter(self, target_text):
+        sender = self.sender()
+        if not sender or not isinstance(sender, ReferenceWidget): return
+        
+        # 3차 창 위젯의 부모 키(예: 제5조)를 가져옴 -> 2차 창의 해당 위젯을 찾기 위함
+        parent_key = sender.parent_key 
+        
+        # 맵에서 2차 창 위젯 검색
+        target_widget = self.right_widget_map.get(parent_key)
+        
+        if target_widget:
+            # 2차 창 위젯에게 'target_text(제10조)'를 하이라이트하라고 요청
+            target_widget.set_highlight(target_widget.current_query, hover_target=target_text)
+
+    def on_third_hover_leave(self):
+        sender = self.sender()
+        if not sender or not isinstance(sender, ReferenceWidget): return
+        
+        parent_key = sender.parent_key
+        target_widget = self.right_widget_map.get(parent_key)
+        
+        if target_widget:
+            target_widget.set_highlight(target_widget.current_query, hover_target="")
+
+    # ... (나머지 스크롤 및 검색 함수들은 기존과 동일) ...
     def on_left_scroll(self):
         sy = self.left_scroll.verticalScrollBar().value()
         curr_left_key = None
@@ -354,46 +390,6 @@ class LawViewerWidget(QWidget):
                 self.right_scroll.verticalScrollBar().setValue(target_right_y)
                 self.sync_lock = False
 
-    def on_ref_hover_enter(self, target_text):
-        # 2차 -> 1차: 1차 위젯들 중 내용에 target_text("제17조")가 있으면 하이라이트
-        for w in self.left_widgets: 
-            # 검색어는 유지하고, 호버 타겟만 업데이트
-            w.set_highlight(w.current_search_query, hover_target=target_text)
-    
-    def on_ref_hover_leave(self):
-        for w in self.left_widgets: 
-            w.set_highlight(w.current_search_query, hover_target="")
-
-    def on_third_hover_enter(self, target_text):
-        # 3차 -> 2차
-        # target_text는 3차 위젯의 highlight_key (예: "제10조")
-        # 3차 위젯의 parent_key를 찾아야 하는데, 위젯 객체에서 보내는 신호가 key 문자열이라서...
-        # 여기서는 sender()를 사용하여 어느 위젯이 보냈는지 확인하는 것이 정확함
-        
-        sender_widget = self.sender()
-        if not sender_widget or not isinstance(sender_widget, ReferenceWidget):
-            return
-
-        parent_key = sender_widget.parent_key # 예: "제5조" (2차 위젯의 키)
-        highlight_word = target_text # 예: "제10조" (하이라이트할 단어)
-
-        for i in range(self.right_layout.count()):
-            item = self.right_layout.itemAt(i)
-            widget = item.widget()
-            if isinstance(widget, ReferenceWidget):
-                # 부모 키가 일치하는 2차 위젯을 찾아서
-                if widget.article_key == parent_key:
-                    # 그 위젯 안의 텍스트("제10조")를 하이라이트
-                    widget.set_highlight(widget.current_query, hover_target=highlight_word)
-
-    def on_third_hover_leave(self):
-        for i in range(self.right_layout.count()):
-            item = self.right_layout.itemAt(i)
-            widget = item.widget()
-            if isinstance(widget, ReferenceWidget):
-                widget.set_highlight(widget.current_query, hover_target="")
-
-    # 검색 로직 (Left/Right/Third) - 코드 길이상 핵심만 남기고 생략했지만, 기존에 드린 것과 동일
     def run_left_search(self, query=None):
         if query is None: query = self.search_bar_left.get_text()
         self.left_matches = []

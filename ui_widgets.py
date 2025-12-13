@@ -4,7 +4,6 @@ from PyQt5.QtCore import pyqtSignal, Qt
 import re
 import os
 
-# ArticleWidget, SectionSeparator는 기존 코드 유지 (최적화 버전)
 class ArticleWidget(QWidget):
     link_clicked = pyqtSignal(str) 
     RE_IMAGE = re.compile(r'\[IMAGE:\s*(.*?)\]')
@@ -99,22 +98,36 @@ class ArticleWidget(QWidget):
             return
 
         self.is_highlighted = True
-        final_title = self.base_title_html
-        final_content = self.base_content_html
+        t_text = self.base_title_html
+        c_text = self.base_content_html
 
+        # [수정] 띄어쓰기 무시 매칭 함수
+        def apply_highlight(text, pattern_str, color, bold=False):
+            if not pattern_str: return text
+            # 글자 사이사이에 \s* (0개 이상의 공백) 패턴을 삽입
+            # 예: "제5조" -> "제\s*5\s*조"
+            flexible_pattern = r"\s*".join([re.escape(char) for char in pattern_str])
+            style = f'background-color: {color};'
+            if bold: style += ' font-weight: bold;'
+            replacement = f'<span style="{style}">\\g<0></span>'
+            
+            # 대소문자 무시, HTML 태그 훼손 방지는 복잡하므로 단순 텍스트 매칭 시도
+            # 여기서는 본문 내용 내에서의 매칭을 우선합니다.
+            return re.sub(f'({flexible_pattern})', replacement, text)
+
+        # 1. 검색어 (노란색)
         if search_query:
-            span = f'<span style="background-color: #ffd700;">{search_query}</span>'
-            final_title = final_title.replace(search_query, span)
-            final_content = final_content.replace(search_query, span)
+            t_text = apply_highlight(t_text, search_query, "#ffd700")
+            c_text = apply_highlight(c_text, search_query, "#ffd700")
 
+        # 2. 호버 타겟 (하늘색)
         if hover_target:
-            # [핵심] 호버 타겟(예: "제17조")이 있으면 그 부분만 하늘색으로 칠함
-            span = f'<span style="background-color: #87CEEB; font-weight: bold;">{hover_target}</span>'
-            final_content = final_content.replace(hover_target, span)
-            final_title = final_title.replace(hover_target, span)
+            t_text = apply_highlight(t_text, hover_target, "#87CEEB", bold=True)
+            c_text = apply_highlight(c_text, hover_target, "#87CEEB", bold=True)
 
-        self.lbl_t.setText(final_title)
-        self.lbl_c.setText(final_content)
+        self.lbl_t.setText(t_text)
+        self.lbl_c.setText(c_text)
+
 
     def on_link_click(self, url):
         self.link_clicked.emit(url)
@@ -139,20 +152,17 @@ class SectionSeparator(QWidget):
         self.setLayout(layout)
         self.setStyleSheet("background-color: #f0f8ff;")
 
-
-# --- [수정] ReferenceWidget (하이라이트 키 전달 기능 추가) ---
 class ReferenceWidget(QWidget):
     hover_entered = pyqtSignal(str) 
     hover_left = pyqtSignal()
     RE_IMAGE = re.compile(r'\[IMAGE:\s*(.*?)\]')
 
-    # [수정] highlight_key 인자 추가 (이게 있으면 이걸 하이라이트 하라고 신호 보냄)
     def __init__(self, category, title, content, font_family="Malgun Gothic", font_size=10, image_base_path=None, parent_key=None, highlight_key=None):
         super().__init__()
         self.target_key = ""
         self.article_key = ""
         self.parent_key = parent_key
-        self.highlight_key = highlight_key # 저장
+        self.highlight_key = highlight_key 
         
         self.plain_title = title
         self.plain_content = content
@@ -162,11 +172,15 @@ class ReferenceWidget(QWidget):
         self.current_hover_target = ""
         self.is_highlighted = False
 
-        match = re.match(r'.*?(제\d+(?:의\d+)?조)', title)
-        if match:
-            clean_key = match.group(1).replace(" ", "")
-            self.target_key = clean_key
-            self.article_key = clean_key
+        if highlight_key:
+            self.target_key = highlight_key
+            self.article_key = highlight_key
+        else:
+            match = re.match(r'.*?(제\s*\d+\s*조(?:\s*의\s*\d+)?)', title)
+            if match:
+                clean_key = match.group(1).replace(" ", "")
+                self.target_key = clean_key
+                self.article_key = clean_key
 
         self.base_content_html = self._process_base_content(content)
         self.base_title_html = self._process_base_title(title)
@@ -234,28 +248,33 @@ class ReferenceWidget(QWidget):
         t_text = self.base_title_html
         c_text = self.base_content_html
 
-        if query:
-            span = f'<span style="background-color: #ffd700;">{query}</span>'
-            t_text = t_text.replace(query, span)
-            c_text = c_text.replace(query, span)
+        # [수정] 띄어쓰기 허용 하이라이트 로직
+        def apply_highlight(text, pattern_str, color, bold=False):
+            if not pattern_str: return text
+            # "제5조" -> "제\s*5\s*조" 패턴 생성
+            flexible_pattern = r"\s*".join([re.escape(char) for char in pattern_str])
+            style = f'background-color: {color};'
+            if bold: style += ' font-weight: bold;'
+            replacement = f'<span style="{style}">\\g<0></span>'
+            return re.sub(f'({flexible_pattern})', replacement, text)
 
+        # 1. 검색어 (노란색)
+        if query:
+            t_text = apply_highlight(t_text, query, "#ffd700")
+            c_text = apply_highlight(c_text, query, "#ffd700")
+
+        # 2. 호버 타겟 (하늘색)
         if hover_target:
-            # 내용에서 타겟 텍스트를 찾아 하이라이트
-            span = f'<span style="background-color: #87CEEB; font-weight: bold;">{hover_target}</span>'
-            c_text = c_text.replace(hover_target, span)
-            t_text = t_text.replace(hover_target, span)
+            t_text = apply_highlight(t_text, hover_target, "#87CEEB", bold=True)
+            c_text = apply_highlight(c_text, hover_target, "#87CEEB", bold=True)
 
         self.lbl_t.setText(t_text)
         self.lbl_c.setText(c_text)
 
     def enterEvent(self, event):
-        # [핵심 로직] 우선순위: highlight_key(지정된 텍스트) -> parent_key(부모조항) -> target_key(자기자신)
-        key = self.highlight_key
-        if not key:
-            key = self.parent_key if self.parent_key else self.target_key
-            
-        if key:
-            self.hover_entered.emit(key)
+        key_to_emit = self.highlight_key if self.highlight_key else self.target_key
+        if key_to_emit: 
+            self.hover_entered.emit(key_to_emit)
         super().enterEvent(event)
 
     def leaveEvent(self, event):
