@@ -4,6 +4,9 @@ from PyQt5.QtCore import pyqtSignal, Qt
 import re
 import os
 
+# =========================================================
+# 1. 법률창 위젯 (ArticleWidget)
+# =========================================================
 class ArticleWidget(QWidget):
     link_clicked = pyqtSignal(str) 
     RE_IMAGE = re.compile(r'\[IMAGE:\s*(.*?)\]')
@@ -21,68 +24,70 @@ class ArticleWidget(QWidget):
         self.font_family = font_family
         self.font_size = font_size
         self.is_highlighted = False 
+        
+        # [핵심] 조항 키 생성 (예: "제1조")
         self.article_key = title.split('(')[0].strip().replace(" ", "") 
 
-        self.base_content_html = self._process_base_content(content)
-        self.base_title_html = self._process_base_title(title)
+        self.base_content_html = self._process_content(content)
+        self.base_title_html = self._process_title(title)
 
+        # 레이아웃 설정
         layout = QVBoxLayout()
-        layout.setContentsMargins(10, 20, 10, 20)
-        
+        layout.setContentsMargins(10, 15, 10, 20) 
+        layout.setSpacing(10) 
+
+        # 상단 구분선
         line = QFrame()
-        line.setFrameShape(QFrame.NoFrame)
+        line.setFrameShape(QFrame.HLine)
+        line.setFrameShadow(QFrame.Plain)
+        line.setStyleSheet("background-color: #333333;") 
         line.setFixedHeight(2)
-        line.setStyleSheet("background-color: #000000;")
         layout.addWidget(line)
 
+        # 제목
         self.lbl_t = QLabel()
         self.lbl_t.setFont(QFont(font_family, font_size + 2, QFont.Bold))
-        self.lbl_t.setStyleSheet("color: #2c3e50;")
+        self.lbl_t.setStyleSheet("color: #2c3e50; margin-top: 5px;")
         self.lbl_t.setWordWrap(True)
-        self.lbl_t.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.lbl_t.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum)
         self.lbl_t.setTextFormat(Qt.RichText) 
+        self.lbl_t.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum)
+        self.lbl_t.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.lbl_t.setText(self.base_title_html)
         layout.addWidget(self.lbl_t)
 
+        # 본문
         self.lbl_c = QLabel()
         self.lbl_c.setFont(QFont(font_family, font_size))
-        self.lbl_c.setStyleSheet("color: #333333; line-height: 1.6;")
+        self.lbl_c.setStyleSheet("color: #333333; line-height: 1.6;") 
         self.lbl_c.setWordWrap(True)
         self.lbl_c.setTextFormat(Qt.RichText) 
-        self.lbl_c.setOpenExternalLinks(False)
         self.lbl_c.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse)
         self.lbl_c.linkActivated.connect(self.on_link_click)
-        self.lbl_c.setMinimumWidth(100)
         self.lbl_c.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum)
         self.lbl_c.setText(self.base_content_html)
-        
         layout.addWidget(self.lbl_c)
+        
         self.setLayout(layout)
 
-    def _process_base_content(self, text):
+    def _process_content(self, text):
         text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         if self.image_base_path:
             def replace_img(match):
                 filename = match.group(1).strip()
-                full_path = os.path.join(self.image_base_path, filename)
-                full_path = full_path.replace("\\", "/")
-                return f'<br><img src="{full_path}" width="600"><br>'
+                path = os.path.join(self.image_base_path, filename).replace("\\", "/")
+                return f'<br><img src="{path}" width="600"><br>'
             text = self.RE_IMAGE.sub(replace_img, text)
+        
         def replace_link(match):
-            law_name = match.group(1)
-            return f'<a href="{law_name}" style="color: #0000FF; text-decoration: underline;">{law_name}</a>'
-        text = self.RE_LINK.sub(replace_link, text)
-        return text
+            name = match.group(1)
+            return f'<a href="{name}" style="color: #2980b9; text-decoration: none; font-weight: bold;">{name}</a>'
+        return self.RE_LINK.sub(replace_link, text)
 
-    def _process_base_title(self, text):
+    def _process_title(self, text):
         return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-    def set_custom_font(self, family, size):
-        self.font_family = family
-        self.font_size = size
-        self.lbl_t.setFont(QFont(family, size + 2, QFont.Bold))
-        self.lbl_c.setFont(QFont(family, size))
+    def on_link_click(self, url):
+        self.link_clicked.emit(url)
 
     def set_highlight(self, search_query, hover_target=None):
         if self.current_search_query == search_query and self.current_hover_target == hover_target:
@@ -101,57 +106,53 @@ class ArticleWidget(QWidget):
         t_text = self.base_title_html
         c_text = self.base_content_html
 
-        # [수정] 띄어쓰기 무시 매칭 함수
-        def apply_highlight(text, pattern_str, color, bold=False):
-            if not pattern_str: return text
-            # 글자 사이사이에 \s* (0개 이상의 공백) 패턴을 삽입
-            # 예: "제5조" -> "제\s*5\s*조"
-            flexible_pattern = r"\s*".join([re.escape(char) for char in pattern_str])
+        def apply(text, pat, color, bold=False):
+            if not pat: return text
+            chars = [re.escape(c) for c in pat]
+            pattern = r"\s*".join(chars)
             style = f'background-color: {color};'
             if bold: style += ' font-weight: bold;'
-            replacement = f'<span style="{style}">\\g<0></span>'
-            
-            # 대소문자 무시, HTML 태그 훼손 방지는 복잡하므로 단순 텍스트 매칭 시도
-            # 여기서는 본문 내용 내에서의 매칭을 우선합니다.
-            return re.sub(f'({flexible_pattern})', replacement, text)
+            def cb(m): return f'<span style="{style}">{m.group(0)}</span>'
+            return re.sub(f'({pattern})', cb, text)
 
-        # 1. 검색어 (노란색)
         if search_query:
-            t_text = apply_highlight(t_text, search_query, "#ffd700")
-            c_text = apply_highlight(c_text, search_query, "#ffd700")
-
-        # 2. 호버 타겟 (하늘색)
+            t_text = apply(t_text, search_query, "#ffd700")
+            c_text = apply(c_text, search_query, "#ffd700")
         if hover_target:
-            t_text = apply_highlight(t_text, hover_target, "#87CEEB", bold=True)
-            c_text = apply_highlight(c_text, hover_target, "#87CEEB", bold=True)
+            t_text = apply(t_text, hover_target, "#87CEEB", bold=True)
+            c_text = apply(c_text, hover_target, "#87CEEB", bold=True)
 
         self.lbl_t.setText(t_text)
         self.lbl_c.setText(c_text)
 
 
-    def on_link_click(self, url):
-        self.link_clicked.emit(url)
-
+# =========================================================
+# 2. 구분선 위젯 (SectionSeparator)
+# =========================================================
 class SectionSeparator(QWidget):
     def __init__(self, title, article_key):
         super().__init__()
         self.article_key = article_key 
         layout = QHBoxLayout()
-        layout.setContentsMargins(0, 30, 0, 10) 
+        layout.setContentsMargins(0, 20, 0, 5) 
+        
         bar = QFrame()
-        bar.setFixedWidth(5)
-        bar.setFixedHeight(25) 
-        bar.setStyleSheet("background-color: #2980b9;")
+        bar.setFixedWidth(4)
+        bar.setFixedHeight(18) 
+        bar.setStyleSheet("background-color: #d35400;") 
         layout.addWidget(bar)
+        
         label = QLabel(title)
-        label.setFont(QFont("Malgun Gothic", 11, QFont.Bold))
-        label.setStyleSheet("color: #2980b9;")
-        label.setWordWrap(True) 
-        label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum) 
+        label.setFont(QFont("Malgun Gothic", 10, QFont.Bold))
+        label.setStyleSheet("color: #d35400;")
+        label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum)
         layout.addWidget(label, 1)
+        
         self.setLayout(layout)
-        self.setStyleSheet("background-color: #f0f8ff;")
 
+# =========================================================
+# 3. 참조/심화참조 위젯 (ReferenceWidget)
+# =========================================================
 class ReferenceWidget(QWidget):
     hover_entered = pyqtSignal(str) 
     hover_left = pyqtSignal()
@@ -159,76 +160,82 @@ class ReferenceWidget(QWidget):
 
     def __init__(self, category, title, content, font_family="Malgun Gothic", font_size=10, image_base_path=None, parent_key=None, highlight_key=None):
         super().__init__()
-        self.target_key = ""
-        self.article_key = ""
+        
+        # [핵심] 마우스 추적 활성화 (호버 반응 속도 향상)
+        self.setMouseTracking(True)
+        
         self.parent_key = parent_key
         self.highlight_key = highlight_key 
         
-        self.plain_title = title
-        self.plain_content = content
-        self.image_base_path = image_base_path
+        # 키 초기화 (안전장치)
+        self.target_key = ""
+        # 기본 키 생성 로직 (제목에서 "제1조" 등 추출)
+        clean_title_key = title.split('(')[0].strip().replace(" ", "")
+        self.article_key = clean_title_key
         
-        self.current_query = ""
-        self.current_hover_target = ""
-        self.is_highlighted = False
-
         if highlight_key:
             self.target_key = highlight_key
             self.article_key = highlight_key
         else:
+            # 제목에서 정규식으로 정확한 조항 키 추출 시도
             match = re.match(r'.*?(제\s*\d+\s*조(?:\s*의\s*\d+)?)', title)
             if match:
                 clean_key = match.group(1).replace(" ", "")
                 self.target_key = clean_key
                 self.article_key = clean_key
 
-        self.base_content_html = self._process_base_content(content)
-        self.base_title_html = self._process_base_title(title)
+        self.current_query = ""
+        self.current_hover_target = ""
+        self.is_highlighted = False
+        
+        self.base_content_html = self._process_content(content, image_base_path)
+        self.base_title_html = self._process_title(title)
 
+        # 디자인 통일 (ArticleWidget 스타일)
         layout = QVBoxLayout()
-        layout.setContentsMargins(15, 10, 15, 20)
-        self.setStyleSheet("background-color: white; border-radius: 5px;")
+        layout.setContentsMargins(15, 15, 15, 20)
+        layout.setSpacing(8)
+        self.setStyleSheet("background-color: white; border-bottom: 1px solid #E0E0E0;") 
 
-        lbl_cat = QLabel(category)
-        lbl_cat.setStyleSheet("color: #d35400; font-weight: bold; font-size: 12px; border: none;")
-        layout.addWidget(lbl_cat)
+        if category:
+            lbl_cat = QLabel(category)
+            lbl_cat.setFont(QFont(font_family, 9, QFont.Bold))
+            lbl_cat.setStyleSheet("color: #e67e22; margin-bottom: 2px;")
+            layout.addWidget(lbl_cat)
 
         self.lbl_t = QLabel()
-        self.lbl_t.setFont(QFont(font_family, font_size + 1, QFont.Bold))
+        self.lbl_t.setFont(QFont(font_family, font_size + 1, QFont.Bold)) 
+        self.lbl_t.setStyleSheet("color: #2c3e50;")
         self.lbl_t.setWordWrap(True)
-        self.lbl_t.setStyleSheet("border: none;")
-        self.lbl_t.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.MinimumExpanding)
         self.lbl_t.setTextFormat(Qt.RichText)
+        self.lbl_t.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum)
+        self.lbl_t.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.lbl_t.setText(self.base_title_html)
         layout.addWidget(self.lbl_t)
 
         self.lbl_c = QLabel()
         self.lbl_c.setFont(QFont(font_family, font_size))
+        self.lbl_c.setStyleSheet("color: #333333; line-height: 1.6;") 
         self.lbl_c.setWordWrap(True)
-        self.lbl_c.setStyleSheet("line-height: 1.5; color: #555555; border: none;")
-        self.lbl_c.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.MinimumExpanding)
         self.lbl_c.setTextFormat(Qt.RichText)
+        self.lbl_c.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum)
+        self.lbl_c.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse)
         self.lbl_c.setText(self.base_content_html)
         layout.addWidget(self.lbl_c)
-        
-        line = QFrame()
-        line.setFrameShape(QFrame.HLine)
-        line.setStyleSheet("background-color: #E0E0E0;")
-        layout.addWidget(line)
+
         self.setLayout(layout)
 
-    def _process_base_content(self, text):
+    def _process_content(self, text, img_path):
         text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        if self.image_base_path:
+        if img_path:
             def replace_img(match):
                 filename = match.group(1).strip()
-                full_path = os.path.join(self.image_base_path, filename)
-                full_path = full_path.replace("\\", "/")
-                return f'<br><img src="{full_path}" width="600"><br>'
+                path = os.path.join(img_path, filename).replace("\\", "/")
+                return f'<br><img src="{path}" width="600"><br>'
             text = self.RE_IMAGE.sub(replace_img, text)
         return text
 
-    def _process_base_title(self, text):
+    def _process_title(self, text):
         return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
     def set_highlight(self, query, hover_target=None):
@@ -248,33 +255,31 @@ class ReferenceWidget(QWidget):
         t_text = self.base_title_html
         c_text = self.base_content_html
 
-        # [수정] 띄어쓰기 허용 하이라이트 로직
-        def apply_highlight(text, pattern_str, color, bold=False):
-            if not pattern_str: return text
-            # "제5조" -> "제\s*5\s*조" 패턴 생성
-            flexible_pattern = r"\s*".join([re.escape(char) for char in pattern_str])
+        def apply(text, pat, color, bold=False):
+            if not pat: return text
+            chars = [re.escape(c) for c in pat]
+            pattern = r"\s*".join(chars)
             style = f'background-color: {color};'
             if bold: style += ' font-weight: bold;'
-            replacement = f'<span style="{style}">\\g<0></span>'
-            return re.sub(f'({flexible_pattern})', replacement, text)
+            def cb(m): return f'<span style="{style}">{m.group(0)}</span>'
+            return re.sub(f'({pattern})', cb, text)
 
-        # 1. 검색어 (노란색)
         if query:
-            t_text = apply_highlight(t_text, query, "#ffd700")
-            c_text = apply_highlight(c_text, query, "#ffd700")
-
-        # 2. 호버 타겟 (하늘색)
+            t_text = apply(t_text, query, "#ffd700")
+            c_text = apply(c_text, query, "#ffd700")
         if hover_target:
-            t_text = apply_highlight(t_text, hover_target, "#87CEEB", bold=True)
-            c_text = apply_highlight(c_text, hover_target, "#87CEEB", bold=True)
+            t_text = apply(t_text, hover_target, "#87CEEB", bold=True)
+            c_text = apply(c_text, hover_target, "#87CEEB", bold=True)
 
         self.lbl_t.setText(t_text)
         self.lbl_c.setText(c_text)
 
+    # [핵심] 호버 이벤트 강화: 어떤 키라도 반드시 찾아내어 신호를 보냄
     def enterEvent(self, event):
-        key_to_emit = self.highlight_key if self.highlight_key else self.target_key
-        if key_to_emit: 
-            self.hover_entered.emit(key_to_emit)
+        # 1순위: 명시적 키, 2순위: 제목에서 추출한 키, 3순위: 기본 생성 키
+        key = self.highlight_key or self.target_key or self.article_key
+        if key: 
+            self.hover_entered.emit(key)
         super().enterEvent(event)
 
     def leaveEvent(self, event):

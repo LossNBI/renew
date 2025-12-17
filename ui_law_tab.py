@@ -281,20 +281,24 @@ class LawViewerWidget(QWidget):
         for w in self.left_widgets: 
             w.set_highlight(w.current_search_query, hover_target="")
 
-    # 3차 -> 2차 (수정됨: target_text는 '제10조' 같은 찾을 단어)
+    # 3차(심화) -> 2차(참조) 하이라이트 연결
     def on_third_hover_enter(self, target_text):
         sender = self.sender()
         if not sender or not isinstance(sender, ReferenceWidget): return
         
-        # 3차 창 위젯의 부모 키(예: 제5조)를 가져옴 -> 2차 창의 해당 위젯을 찾기 위함
+        # 1. 심화 위젯이 생성될 때 저장된 parent_key(예: '제5조')를 가져옵니다.
         parent_key = sender.parent_key 
         
-        # 맵에서 2차 창 위젯 검색
+        # 2. 2차 창 위젯 맵에서 해당 부모(참조 조항) 위젯을 찾습니다.
         target_widget = self.right_widget_map.get(parent_key)
         
         if target_widget:
-            # 2차 창 위젯에게 'target_text(제10조)'를 하이라이트하라고 요청
-            target_widget.set_highlight(target_widget.current_query, hover_target=target_text)
+            # 3. 찾은 2차 창 위젯 내부의 target_text(예: '제10조')에 하이라이트를 켭니다.
+            # ReferenceWidget의 set_highlight는 (검색어, 호버타겟) 순서입니다.
+            target_widget.set_highlight(getattr(target_widget, 'current_query', ""), hover_target=target_text)
+            
+            # (선택 사항) 하이라이트된 2차 창 위젯이 화면에 보이도록 스크롤 이동
+            self.right_scroll.ensureWidgetVisible(target_widget, 0, 150)
 
     def on_third_hover_leave(self):
         sender = self.sender()
@@ -304,7 +308,8 @@ class LawViewerWidget(QWidget):
         target_widget = self.right_widget_map.get(parent_key)
         
         if target_widget:
-            target_widget.set_highlight(target_widget.current_query, hover_target="")
+            # 하이라이트 해제 (hover_target을 빈 값으로)
+            target_widget.set_highlight(getattr(target_widget, 'current_query', ""), hover_target="")
 
     # ... (나머지 스크롤 및 검색 함수들은 기존과 동일) ...
     def on_left_scroll(self):

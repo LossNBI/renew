@@ -4,6 +4,16 @@ import shutil
 import re
 import sys
 
+def resource_path(relative_path):
+    """ 실행 환경에 따른 리소스 절대 경로 반환 """
+    try:
+        # PyInstaller에 의해 생성된 임시 폴더 경로 (_MEIPASS)
+        base_path = sys._MEIPASS
+    except Exception:
+        # 일반 파이썬 실행 환경 (개발 중)
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
 class LawDataManager:
     def __init__(self, config_file='config.json'):
         if getattr(sys, 'frozen', False):
