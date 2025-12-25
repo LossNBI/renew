@@ -5,20 +5,27 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QComboBox, QScrollArea, QLabel, 
                              QSplitter, QProgressDialog, QApplication)
 from PyQt5.QtGui import QFont 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QEventLoop
 
 from ui_windows import DetachedWindow
 from ui_search_bar import LawSearchBar
-from data_manager import LawDataManager
 from ui_widgets import ArticleWidget, ReferenceWidget, SectionSeparator
 
 class LawViewerWidget(QWidget):
     def __init__(self, manager, parent=None):
         super().__init__(parent)
         self.manager = manager
+        
+        # 데이터 관리용
         self.left_widgets = [] 
+        self.right_widget_map = {}   
+        self.right_sep_map = {}      
+        self.third_sep_map = {}      
+        
         self.curr_font = "Malgun Gothic"
         self.curr_size = 11
+        self.sync_lock = False
+        self.last_sync_time = 0
         
         self.left_matches = [] 
         self.left_match_idx = -1
@@ -27,507 +34,396 @@ class LawViewerWidget(QWidget):
         self.third_matches = [] 
         self.third_match_idx = -1
         
-        self.sync_lock = False
-        self.last_sync_time = 0
-        
-        self.right_widget_map = {} 
         self.detached_windows = []
-        
-        # 조항 키 추출용 정규식 (제n조의m 지원)
         self.re_art_key = re.compile(r'.*?(제\s*\d+\s*조(?:\s*의\s*\d+)?)')
 
         self.setup_ui()
 
     def setup_ui(self):
-        # (기존 UI 레이아웃 코드와 완전히 동일)
-        layout = QVBoxLayout(self)
-        top = QHBoxLayout()
+        main_layout = QVBoxLayout(self)
+        
+        top_bar = QHBoxLayout()
         self.combo = QComboBox()
         self.combo.currentIndexChanged.connect(self.load_law)
-        top.addWidget(QLabel("법률 선택:"))
-        top.addWidget(self.combo, 1)
-        layout.addLayout(top)
+        top_bar.addWidget(QLabel("법률 선택:"))
+        top_bar.addWidget(self.combo, 1)
+        main_layout.addLayout(top_bar)
 
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.setHandleWidth(3) 
-        splitter.setStyleSheet("QSplitter::handle { background-color: #BDC3C7; }")
+        self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.setHandleWidth(3) 
+        self.splitter.setStyleSheet("QSplitter::handle { background-color: #BDC3C7; }")
 
-        left_widget = QWidget()
-        left_layout = QVBoxLayout(left_widget)
-        self.search_bar_left = LawSearchBar()
-        self.search_bar_left.search_requested.connect(self.run_left_search)
-        self.search_bar_left.next_clicked.connect(self.next_left_search)
-        self.search_bar_left.prev_clicked.connect(self.prev_left_search)
-        left_layout.addWidget(self.search_bar_left)
-        self.sticky = QLabel("법률을 선택하세요")
-        self.sticky.setStyleSheet("background: #4A90E2; color: white; padding: 10px; font-weight: bold;")
-        left_layout.addWidget(self.sticky)
-        self.left_scroll = QScrollArea()
-        self.left_scroll.setWidgetResizable(True)
-        self.left_content = QWidget()
-        self.left_layout = QVBoxLayout(self.left_content)
-        self.left_layout.setAlignment(Qt.AlignTop)
-        self.left_scroll.setWidget(self.left_content)
+        # 🚀 수정 포인트: _create_column이 컨테이너 자체를 반환하고, 바로 splitter에 추가합니다.
+        self.left_container, self.left_scroll, self.left_layout, self.search_bar_left, self.sticky = self._create_column("#4A90E2", "법률을 선택하세요")
+        self.right_container, self.right_scroll, self.right_layout, self.search_bar_right, _ = self._create_column("#505050", "관련 규정 및 참조 (1차)")
+        self.third_container, self.third_scroll, self.third_layout, self.search_bar_third, _ = self._create_column("#2c3e50", "심화 참조 (조항만 표시)")
+
+        self.splitter.addWidget(self.left_container)
+        self.splitter.addWidget(self.right_container)
+        self.splitter.addWidget(self.third_container)
+
+        # 스크롤 이벤트 연결 (이제 객체가 삭제되지 않아 안전합니다)
         self.left_scroll.verticalScrollBar().valueChanged.connect(self.on_left_scroll)
-        left_layout.addWidget(self.left_scroll)
-        splitter.addWidget(left_widget)
-
-        right_widget = QWidget()
-        right_layout = QVBoxLayout(right_widget)
-        self.search_bar_right = LawSearchBar()
-        self.search_bar_right.search_requested.connect(self.run_right_search)
-        self.search_bar_right.next_clicked.connect(self.next_right_search)
-        self.search_bar_right.prev_clicked.connect(self.prev_right_search)
-        right_layout.addWidget(self.search_bar_right)
-        lbl_ref = QLabel("관련 규정 및 참조 (1차)")
-        lbl_ref.setStyleSheet("background: #505050; color: white; padding: 10px; font-weight: bold;")
-        right_layout.addWidget(lbl_ref)
-        self.right_scroll = QScrollArea()
-        self.right_scroll.setWidgetResizable(True)
-        self.right_content = QWidget()
-        self.right_layout = QVBoxLayout(self.right_content)
-        self.right_layout.setAlignment(Qt.AlignTop)
-        self.right_scroll.setStyleSheet("background-color: #F9F9F9;") 
-        self.right_scroll.setWidget(self.right_content)
         self.right_scroll.verticalScrollBar().valueChanged.connect(self.on_right_scroll)
-        right_layout.addWidget(self.right_scroll)
-        splitter.addWidget(right_widget)
-
-        third_widget = QWidget()
-        third_layout = QVBoxLayout(third_widget)
-        self.search_bar_third = LawSearchBar()
-        self.search_bar_third.search_requested.connect(self.run_third_search)
-        self.search_bar_third.next_clicked.connect(self.next_third_search)
-        self.search_bar_third.prev_clicked.connect(self.prev_third_search)
-        third_layout.addWidget(self.search_bar_third)
-        lbl_third = QLabel("심화 참조 (조항만 표시)")
-        lbl_third.setStyleSheet("background: #2c3e50; color: white; padding: 10px; font-weight: bold;")
-        third_layout.addWidget(lbl_third)
-        self.third_scroll = QScrollArea()
-        self.third_scroll.setWidgetResizable(True)
-        self.third_content = QWidget()
-        self.third_layout = QVBoxLayout(self.third_content)
-        self.third_layout.setAlignment(Qt.AlignTop)
-        self.third_scroll.setStyleSheet("background-color: #ECF0F1;") 
-        self.third_scroll.setWidget(self.third_content)
         self.third_scroll.verticalScrollBar().valueChanged.connect(self.on_third_scroll)
-        third_layout.addWidget(self.third_scroll)
-        splitter.addWidget(third_widget)
 
-        splitter.setSizes([500, 400, 400])
-        layout.addWidget(splitter)
+        self._connect_search(self.search_bar_left, self.run_left_search, self.next_left_search, self.prev_left_search)
+        self._connect_search(self.search_bar_right, self.run_right_search, self.next_right_search, self.prev_right_search)
+        self._connect_search(self.search_bar_third, self.run_third_search, self.next_third_search, self.prev_third_search)
+
+        self.splitter.setSizes([500, 400, 400])
+        main_layout.addWidget(self.splitter)
         self.refresh_combo()
 
-    def refresh_combo(self):
-        curr = self.combo.currentText()
-        self.combo.blockSignals(True)
-        self.combo.clear()
-        for name in self.manager.config["DATABASES"]:
-            self.combo.addItem(name)
-        if curr: self.combo.setCurrentText(curr)
-        self.combo.blockSignals(False)
-        if self.combo.count() > 0 and not self.left_widgets:
-            self.load_law()
+    def _create_column(self, color, title):
+        # 🚀 수정 포인트: 컨테이너에 self(부모)를 명시하여 메모리 삭제 방지
+        container = QWidget(self) 
+        lay = QVBoxLayout(container)
+        
+        sb = LawSearchBar()
+        lay.addWidget(sb)
+        
+        sticky = QLabel(title)
+        sticky.setStyleSheet(f"background: {color}; color: white; padding: 10px; font-weight: bold;")
+        lay.addWidget(sticky)
+        
+        sc = QScrollArea()
+        sc.setWidgetResizable(True)
+        content = QWidget()
+        content_lay = QVBoxLayout(content)
+        content_lay.setAlignment(Qt.AlignTop)
+        sc.setWidget(content)
+        lay.addWidget(sc)
+        
+        return container, sc, content_lay, sb, sticky
 
     def load_law(self):
         law_name = self.combo.currentText()
         if not law_name: return
 
         self.setUpdatesEnabled(False)
+        self.combo.setEnabled(False)
 
         try:
-            self._clear_layout(self.left_layout)
-            self._clear_layout(self.right_layout)
-            self._clear_layout(self.third_layout)
-            self.left_widgets = []
-            self.right_widget_map = {} 
-            
-            for sb in [self.search_bar_left, self.search_bar_right, self.search_bar_third]:
-                sb.clear_input()
-                sb.set_count_text("0/0")
-
+            self._clear_layouts()
             data = self.manager.get_parsed_data(law_name)
             if not data: return
 
             law_code = self.manager.config["DATABASES"].get(law_name)
-            img_folder_name = self.manager.config["IMAGE_FOLDERS"].get(law_code)
-            img_base_path = os.path.join(self.manager.data_dir, img_folder_name) if img_folder_name else None
+            img_folder = self.manager.config["IMAGE_FOLDERS"].get(law_code)
+            img_base_path = os.path.join(self.manager.data_dir, img_folder) if img_folder else None
 
-            total_steps = len(data) * 3 
-            progress = QProgressDialog("법률 데이터를 분석 중입니다...", "취소", 0, total_steps, self)
-            progress.setWindowTitle("로딩 중")
+            progress = QProgressDialog("데이터를 로드 중입니다...", "취소", 0, len(data), self)
             progress.setWindowModality(Qt.WindowModal)
-            progress.setMinimumDuration(0) 
-            progress.setValue(0)
-            current_step = 0
-
-            # 1. 왼쪽 생성
-            for i, item in enumerate(data):
-                if progress.wasCanceled(): break
-                w = ArticleWidget(item['chapter'], item['title'], item['content'], self.curr_font, self.curr_size, image_base_path=img_base_path)
-                w.link_clicked.connect(self.open_new_window)
-                self.left_layout.addWidget(w)
-                self.left_widgets.append(w)
-                current_step += 1
-                progress.setValue(current_step)
-                if i % 10 == 0: QApplication.processEvents()
-
-            # 2. 오른쪽 & 심화 생성
-            has_any_ref_right = False
-            has_any_ref_third = False
 
             for i, item in enumerate(data):
                 if progress.wasCanceled(): break
-                article_key = item['article_key']
-                related = self.manager.get_related_articles(article_key)
                 
-                if related:
-                    has_any_ref_right = True
-                    sep_right = SectionSeparator(f"■ {item['title']} 관련 규정", article_key)
-                    self.right_layout.addWidget(sep_right)
+                curr_chapter = item['chapter']
+                art_key = item['article_key']
+                # 🚀 1번창 고유 ID: "제1장_제1조"
+                u_id = f"{curr_chapter}_{art_key}".replace(" ", "")
 
-                    order_map = {'I. 시행령': 1, 'II. 시행규칙': 2, 'III. 관련 조항': 3, 'IV. 타법 참조': 4}
-                    related.sort(key=lambda x: order_map.get(x['type'], 99))
+                # 1. 1번창 위젯 생성
+                w_left = ArticleWidget(curr_chapter, item['title'], item['content'], 
+                                       self.curr_font, self.curr_size, image_base_path=img_base_path)
+                w_left.unique_id = u_id 
+                w_left.link_clicked.connect(self.open_new_window)
+                self.left_layout.addWidget(w_left)
+                self.left_widgets.append(w_left)
+
+                # 2. 2번창 구분선 및 내용 생성
+                related = self.manager.get_related_articles(art_key)
+                if related:
+                    sep_right = SectionSeparator(f"■ {item['title']} 관련 규정", u_id)
+                    self.right_layout.addWidget(sep_right)
+                    self.right_sep_map[u_id] = sep_right 
 
                     for r in related:
                         r_data = r['data']
-                        h_key = r_data.get('article_key')
-                        if not h_key:
-                            match = self.re_art_key.match(r_data['title'])
-                            if match: h_key = match.group(1).replace(" ", "")
-
-                        w_right = ReferenceWidget(
-                            r['type'], r_data['title'], r_data['content'], 
-                            self.curr_font, self.curr_size, 
-                            image_base_path=img_base_path,
-                            highlight_key=h_key 
-                        )
+                        h_key = r_data.get('article_key') or self._extract_key(r_data['title'])
+                        
+                        # 🚀 2번창 위젯 고유 ID: "제1장_제1조_시행령_제3조" (중복 방지용)
+                        r_u_id = f"{u_id}_{r['type']}_{h_key}".replace(" ", "")
+                        
+                        w_right = ReferenceWidget(r['type'], r_data['title'], r_data['content'], 
+                                                 self.curr_font, self.curr_size, 
+                                                 image_base_path=img_base_path, highlight_key=h_key)
+                        w_right.unique_id = r_u_id      # 자기 자신의 ID
+                        w_right.parent_unique_id = u_id # 1번창의 누구에게 속하는지
+                        
                         w_right.hover_entered.connect(self.on_ref_hover_enter)
                         w_right.hover_left.connect(self.on_ref_hover_leave)
                         self.right_layout.addWidget(w_right)
-                        
-                        if w_right.article_key:
-                            self.right_widget_map[w_right.article_key] = w_right
+                        self.right_widget_map[r_u_id] = w_right
 
-                        # 3차 생성
+                        # 3. 3번창 심화 참조 생성
                         if r['type'] in ['III. 관련 조항', 'IV. 타법 참조']:
                             deep_key = w_right.article_key
                             if deep_key:
-                                deep_related = self.manager.get_related_articles(deep_key)
-                                filtered_deep = [dr for dr in deep_related if dr['type'] in ['III. 관련 조항', 'IV. 타법 참조']]
-                                
-                                if filtered_deep:
-                                    has_any_ref_third = True
-                                    sep_third = SectionSeparator(f"→ {r_data['title']}의 참조", deep_key)
+                                d_related = self.manager.get_related_articles(deep_key)
+                                filtered = [dr for dr in d_related if dr['type'] in ['III. 관련 조항', 'IV. 타법 참조']]
+                                if filtered:
+                                    # 3번창 구분선은 2번창 위젯의 고유 ID(r_u_id)를 참조함
+                                    sep_third = SectionSeparator(f"→ {r_data['title']} 참조", r_u_id)
                                     self.third_layout.addWidget(sep_third)
-
-                                    for dr in filtered_deep:
+                                    self.third_sep_map[r_u_id] = sep_third
+                                    
+                                    for dr in filtered:
                                         dr_data = dr['data']
-                                        dh_key = dr_data.get('article_key')
-                                        if not dh_key:
-                                            match = self.re_art_key.match(dr_data['title'])
-                                            if match: dh_key = match.group(1).replace(" ", "")
-
-                                        w_third = ReferenceWidget(
-                                            dr['type'], dr_data['title'], dr_data['content'],
-                                            self.curr_font, self.curr_size, 
-                                            image_base_path=None, 
-                                            parent_key=deep_key, 
-                                            highlight_key=dh_key 
-                                        )
+                                        dh_key = dr_data.get('article_key') or self._extract_key(dr_data['title'])
+                                        w_third = ReferenceWidget(dr['type'], dr_data['title'], dr_data['content'], 
+                                                                 self.curr_font, self.curr_size, 
+                                                                 parent_key=r_u_id, highlight_key=dh_key)
                                         w_third.hover_entered.connect(self.on_third_hover_enter)
                                         w_third.hover_left.connect(self.on_third_hover_leave)
                                         self.third_layout.addWidget(w_third)
 
-                current_step += 1
-                progress.setValue(current_step)
-                if i % 10 == 0: QApplication.processEvents()
-
-            if not has_any_ref_right: self._add_placeholder(self.right_layout, "관련 참조 내용이 없습니다.")
-            if not has_any_ref_third: self._add_placeholder(self.third_layout, "심화 참조(법 조항)가 없습니다.")
+                if i % 20 == 0:
+                    progress.setValue(i)
+                    QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
 
             self.right_layout.addStretch(1)
             self.third_layout.addStretch(1)
-
-            progress.setValue(total_steps)
-            self.left_scroll.verticalScrollBar().setValue(0)
-            self.right_scroll.verticalScrollBar().setValue(0)
-            self.third_scroll.verticalScrollBar().setValue(0)
-            if data: self.sticky.setText(data[0]['chapter'])
+            progress.close()
+            if self.left_widgets: self.sticky.setText(self.left_widgets[0].chapter)
 
         finally:
             self.setUpdatesEnabled(True)
+            self.combo.setEnabled(True)
 
-    def _add_placeholder(self, layout, text):
-        lbl = QLabel(text)
-        lbl.setAlignment(Qt.AlignCenter)
-        lbl.setStyleSheet("color: gray; margin-top: 20px;")
-        layout.addWidget(lbl)
-
-    def _clear_layout(self, layout):
-        while layout.count():
-            item = layout.takeAt(0)
-            widget = item.widget()
-            if widget: widget.deleteLater()
-
-    # --- [호버 로직] ---
-
-    # 2차 -> 1차 (기존과 동일)
-    def on_ref_hover_enter(self, target_text):
-        for w in self.left_widgets: 
-            w.set_highlight(w.current_search_query, hover_target=target_text)
-
-    def on_ref_hover_leave(self):
-        for w in self.left_widgets: 
-            w.set_highlight(w.current_search_query, hover_target="")
-
-    # 3차(심화) -> 2차(참조) 하이라이트 연결
-    def on_third_hover_enter(self, target_text):
-        sender = self.sender()
-        if not sender or not isinstance(sender, ReferenceWidget): return
-        
-        # 1. 심화 위젯이 생성될 때 저장된 parent_key(예: '제5조')를 가져옵니다.
-        parent_key = sender.parent_key 
-        
-        # 2. 2차 창 위젯 맵에서 해당 부모(참조 조항) 위젯을 찾습니다.
-        target_widget = self.right_widget_map.get(parent_key)
-        
-        if target_widget:
-            # 3. 찾은 2차 창 위젯 내부의 target_text(예: '제10조')에 하이라이트를 켭니다.
-            # ReferenceWidget의 set_highlight는 (검색어, 호버타겟) 순서입니다.
-            target_widget.set_highlight(getattr(target_widget, 'current_query', ""), hover_target=target_text)
-            
-            # (선택 사항) 하이라이트된 2차 창 위젯이 화면에 보이도록 스크롤 이동
-            self.right_scroll.ensureWidgetVisible(target_widget, 0, 150)
-
-    def on_third_hover_leave(self):
-        sender = self.sender()
-        if not sender or not isinstance(sender, ReferenceWidget): return
-        
-        parent_key = sender.parent_key
-        target_widget = self.right_widget_map.get(parent_key)
-        
-        if target_widget:
-            # 하이라이트 해제 (hover_target을 빈 값으로)
-            target_widget.set_highlight(getattr(target_widget, 'current_query', ""), hover_target="")
-
-    # ... (나머지 스크롤 및 검색 함수들은 기존과 동일) ...
     def on_left_scroll(self):
-        sy = self.left_scroll.verticalScrollBar().value()
-        curr_left_key = None
-        for w in self.left_widgets:
-            if w.y() + w.height() > sy:
-                if self.sticky.text() != w.chapter: self.sticky.setText(w.chapter)
-                curr_left_key = w.article_key
-                break
+        """1번 -> 2번 연동 (unique_id 기준)"""
         if self.sync_lock: return
-        if not curr_left_key: return
-        target_right_y = -1
-        for i in range(self.right_layout.count()):
-            item = self.right_layout.itemAt(i)
-            widget = item.widget()
-            if isinstance(widget, SectionSeparator) and widget.article_key == curr_left_key:
-                target_right_y = widget.y()
+        sy = self.left_scroll.verticalScrollBar().value()
+        
+        for w in self.left_widgets:
+            if w.y() + w.height() > sy + 10:
+                # 🚀 조항번호가 아닌 고유 ID로 2번창 검색
+                target_id = w.unique_id 
+                if target_id in self.right_sep_map:
+                    self._sync_to_target(self.right_scroll, self.right_sep_map[target_id])
                 break
-        if target_right_y != -1:
-            self.sync_lock = True 
-            self.right_scroll.verticalScrollBar().setValue(target_right_y)
-            self.sync_lock = False
 
     def on_right_scroll(self):
+        """2번 -> 3번 연동 (unique_id 기준)"""
         if self.sync_lock: return
         sy = self.right_scroll.verticalScrollBar().value()
-        visible_ref_key = None
-        visible_sep_key = None
+        
         for i in range(self.right_layout.count()):
-            item = self.right_layout.itemAt(i)
-            widget = item.widget()
-            if not widget: continue
-            if widget.y() + widget.height() > sy:
-                if isinstance(widget, ReferenceWidget): visible_ref_key = widget.article_key
-                elif isinstance(widget, SectionSeparator): visible_sep_key = widget.article_key
+            w = self.right_layout.itemAt(i).widget()
+            if not w or getattr(w, 'is_placeholder', False): continue
+
+            if w.y() + w.height() > sy + 20:
+                # 🚀 현재 2번창 맨 위 위젯의 고유 ID 추출
+                target_id = getattr(w, 'unique_id', None)
+                if target_id in self.third_sep_map:
+                    self._sync_to_target(self.third_scroll, self.third_sep_map[target_id])
                 break
-        if visible_ref_key:
-            target_third_y = -1
-            for i in range(self.third_layout.count()):
-                item = self.third_layout.itemAt(i)
-                widget = item.widget()
-                if isinstance(widget, SectionSeparator) and widget.article_key == visible_ref_key:
-                    target_third_y = widget.y()
-                    break
-            if target_third_y != -1:
-                self.third_scroll.blockSignals(True) 
-                self.third_scroll.verticalScrollBar().setValue(target_third_y)
-                self.third_scroll.blockSignals(False)
-        if time.time() - self.last_sync_time > 10 and visible_sep_key:
-            target_left_y = -1
-            for w in self.left_widgets:
-                if w.article_key == visible_sep_key:
-                    target_left_y = w.y()
-                    break
-            if target_left_y != -1 and abs(self.left_scroll.verticalScrollBar().value() - target_left_y) > 20:
-                self.sync_lock = True
-                self.left_scroll.verticalScrollBar().setValue(target_left_y)
-                self.sync_lock = False
-                self.last_sync_time = time.time()
 
     def on_third_scroll(self):
+        """[Step 3] 3번(심화) -> 2번(참조) 연동"""
         if self.sync_lock: return
+        
         sy = self.third_scroll.verticalScrollBar().value()
-        visible_sep_key = None
-        for i in range(self.third_layout.count()):
-            item = self.third_layout.itemAt(i)
-            widget = item.widget()
-            if not widget: continue
-            if widget.y() + widget.height() > sy:
-                if isinstance(widget, SectionSeparator): visible_sep_key = widget.article_key
-                break
-        if visible_sep_key:
-            target_right_y = -1
-            for i in range(self.right_layout.count()):
-                item = self.right_layout.itemAt(i)
-                widget = item.widget()
-                if isinstance(widget, ReferenceWidget) and widget.article_key == visible_sep_key:
-                    target_right_y = widget.y()
-                    break
-            if target_right_y != -1:
-                self.sync_lock = True
-                self.right_scroll.verticalScrollBar().setValue(target_right_y)
-                self.sync_lock = False
+        threshold = sy + 20
 
-    def run_left_search(self, query=None):
-        if query is None: query = self.search_bar_left.get_text()
+        target_key = None
+        for i in range(self.third_layout.count()):
+            w = self.third_layout.itemAt(i).widget()
+            if not w or getattr(w, 'is_placeholder', False): continue
+
+            if w.y() + w.height() > threshold:
+                # 3번 창 위젯은 parent_key(2번창의 키)를 가지고 있음
+                target_key = getattr(w, 'parent_key', None)
+                break
+
+        if target_key and target_key in self.right_widget_map:
+            target_w = self.right_widget_map[target_key]
+            # 2번 창의 해당 위젯이 이미 보이고 있다면 굳이 움직이지 않음 (무한루프 방지)
+            curr_2_y = self.right_scroll.verticalScrollBar().value()
+            if abs(curr_2_y - target_w.y()) > 50:
+                self._sync_to_target(self.right_scroll, target_w)
+
+    def _sync_to_target(self, scroll_area, target_widget):
+        """공통: target_widget을 scroll_area의 최상단으로 정밀 이동"""
+        if not target_widget: return
+        
+        # 이동할 목표 좌표
+        target_y = target_widget.y()
+        
+        # 현재 스크롤 위치와 거의 같다면 무시 (성능 및 떨림 방지)
+        if abs(scroll_area.verticalScrollBar().value() - target_y) < 5:
+            return
+
+        self.sync_lock = True
+        scroll_area.verticalScrollBar().blockSignals(True)
+        
+        # 🎯 최상단으로 붙이기
+        scroll_area.verticalScrollBar().setValue(target_y)
+        
+        scroll_area.verticalScrollBar().blockSignals(False)
+        self.sync_lock = False
+
+    def _add_placeholder(self, layout, txt):
+        """플레이스홀더 추가 시 속성 부여"""
+        l = QLabel(txt)
+        l.is_placeholder = True # 이제 이 속성이 안전하게 체크됩니다.
+        l.setAlignment(Qt.AlignCenter)
+        l.setStyleSheet("color: gray; margin: 20px;")
+        layout.addWidget(l)
+
+    def on_ref_hover_enter(self, target):
+        """참조창 호버 시 본문 하이라이트 (성능 개선)"""
+        if not target: return
+        # 현재 화면에 보이는 위젯들 위주로만 먼저 체크하도록 설계하는 것이 좋으나, 
+        # 일단은 텍스트 변경 여부를 위젯 내부(ArticleWidget)에서 체크하도록 맡깁니다.
+        for w in self.left_widgets:
+            # target이 바뀔 때만 호출되도록 ArticleWidget.set_highlight 내부 수정 권장
+            w.set_highlight(getattr(w, 'current_search_query', ""), hover_target=target)
+
+    def on_ref_hover_leave(self):
+        for w in self.left_widgets:
+            w.set_highlight(getattr(w, 'current_search_query', ""), hover_target="")
+
+    def on_third_hover_enter(self, target):
+        s = self.sender()
+        if s and (target_w := self.right_widget_map.get(s.parent_key)):
+            target_w.set_highlight(getattr(target_w, 'current_query', ""), hover_target=target)
+            self.right_scroll.ensureWidgetVisible(target_w, 0, 150)
+    def on_third_hover_leave(self):
+        s = self.sender()
+        if s and (target_w := self.right_widget_map.get(s.parent_key)):
+            target_w.set_highlight(getattr(target_w, 'current_query', ""), hover_target="")
+
+    def run_left_search(self, q=None):
+        """1번 창 검색 (렉 최적화 버전)"""
+        if q is None: q = self.search_bar_left.get_text()
+        
+        # 🚀 최적화: 모든 화면 업데이트 중지
+        self.left_scroll.setUpdatesEnabled(False)
+        
         self.left_matches = []
-        self.left_match_idx = -1
-        for i, widget in enumerate(self.left_widgets):
-            has_text = query and (query in widget.title_text or query in widget.plain_content)
-            if has_text:
-                widget.set_highlight(query)
+        for i, w in enumerate(self.left_widgets):
+            # 1. 검색어가 있는 경우에만 처리
+            if q and (q in w.title_text or q in w.plain_content):
+                # 이미 같은 쿼리로 하이라이트 되어 있다면 건너뜀 (렉 방지 핵심)
+                if getattr(w, 'last_query', "") != q:
+                    w.set_highlight(q)
                 self.left_matches.append(i)
-            else: widget.set_highlight("") 
-        if not query: self.search_bar_left.set_count_text("0/0"); return
-        if self.left_matches:
-            self.left_match_idx = 0
-            self.update_left_search_ui()
-            self.move_to_left_match(self.left_match_idx)
-        else: self.search_bar_left.set_count_text("0/0")
+            else:
+                # 검색어가 없는데 하이라이트가 남아있는 경우에만 리셋
+                if getattr(w, 'last_query', "") != "":
+                    w.set_highlight("")
+        
+        self.left_scroll.setUpdatesEnabled(True)
+        
+        self.left_match_idx = 0 if self.left_matches else -1
+        self._update_search_ui(self.search_bar_left, self.left_matches, self.left_match_idx, self.left_scroll, self.left_widgets)
+
     def next_left_search(self):
         if not self.left_matches: return
         self.left_match_idx = (self.left_match_idx + 1) % len(self.left_matches)
-        self.move_to_left_match(self.left_match_idx)
-        self.update_left_search_ui()
+        self._update_search_ui(self.search_bar_left, self.left_matches, self.left_match_idx, self.left_scroll, self.left_widgets)
+
     def prev_left_search(self):
         if not self.left_matches: return
         self.left_match_idx = (self.left_match_idx - 1) % len(self.left_matches)
-        self.move_to_left_match(self.left_match_idx)
-        self.update_left_search_ui()
-    def update_left_search_ui(self): self.search_bar_left.set_count_text(f"{self.left_match_idx + 1}/{len(self.left_matches)}")
-    def move_to_left_match(self, idx): self.left_scroll.verticalScrollBar().setValue(self.left_widgets[self.left_matches[idx]].y())
+        self._update_search_ui(self.search_bar_left, self.left_matches, self.left_match_idx, self.left_scroll, self.left_widgets)
 
-    def run_right_search(self, query=None):
-        if query is None: query = self.search_bar_right.get_text()
+    def run_right_search(self, q=None):
+        if q is None: q = self.search_bar_right.get_text()
         self.right_matches = []
-        self.right_match_idx = -1
         for i in range(self.right_layout.count()):
-            item = self.right_layout.itemAt(i)
-            widget = item.widget()
-            if isinstance(widget, ReferenceWidget):
-                has_text = query and (query in widget.plain_title or query in widget.plain_content)
-                if has_text: widget.set_highlight(query); self.right_matches.append(widget)
-                else: widget.set_highlight("")
-        if not query: self.search_bar_right.set_count_text("0/0"); return
-        if self.right_matches:
-            self.right_match_idx = 0
-            self.update_right_search_ui()
-            self.move_to_right_match(self.right_match_idx)
-        else: self.search_bar_right.set_count_text("0/0")
+            w = self.right_layout.itemAt(i).widget()
+            if isinstance(w, ReferenceWidget):
+                if q and (q in w.plain_title or q in w.plain_content):
+                    w.set_highlight(q); self.right_matches.append(w)
+                else: w.set_highlight("")
+        self.right_match_idx = 0 if self.right_matches else -1
+        self._update_search_ui_widget(self.search_bar_right, self.right_matches, self.right_match_idx, self.right_scroll)
+
     def next_right_search(self):
         if not self.right_matches: return
         self.right_match_idx = (self.right_match_idx + 1) % len(self.right_matches)
-        self.move_to_right_match(self.right_match_idx)
-        self.update_right_search_ui()
+        self._update_search_ui_widget(self.search_bar_right, self.right_matches, self.right_match_idx, self.right_scroll)
+
     def prev_right_search(self):
         if not self.right_matches: return
         self.right_match_idx = (self.right_match_idx - 1) % len(self.right_matches)
-        self.move_to_right_match(self.right_match_idx)
-        self.update_right_search_ui()
-    def update_right_search_ui(self): self.search_bar_right.set_count_text(f"{self.right_match_idx + 1}/{len(self.right_matches)}")
-    def move_to_right_match(self, idx): self.right_scroll.verticalScrollBar().setValue(self.right_matches[idx].y())
+        self._update_search_ui_widget(self.search_bar_right, self.right_matches, self.right_match_idx, self.right_scroll)
 
-    def run_third_search(self, query=None):
-        if query is None: query = self.search_bar_third.get_text()
+    def run_third_search(self, q=None):
+        if q is None: q = self.search_bar_third.get_text()
         self.third_matches = []
-        self.third_match_idx = -1
         for i in range(self.third_layout.count()):
-            item = self.third_layout.itemAt(i)
-            widget = item.widget()
-            if isinstance(widget, ReferenceWidget):
-                has_text = query and (query in widget.plain_title or query in widget.plain_content)
-                if has_text: widget.set_highlight(query); self.third_matches.append(widget)
-                else: widget.set_highlight("")
-        if not query: self.search_bar_third.set_count_text("0/0"); return
-        if self.third_matches:
-            self.third_match_idx = 0
-            self.update_third_search_ui()
-            self.move_to_third_match(self.third_match_idx)
-        else: self.search_bar_third.set_count_text("0/0")
+            w = self.third_layout.itemAt(i).widget()
+            if isinstance(w, ReferenceWidget):
+                if q and (q in w.plain_title or q in w.plain_content):
+                    w.set_highlight(q); self.third_matches.append(w)
+                else: w.set_highlight("")
+        self.third_match_idx = 0 if self.third_matches else -1
+        self._update_search_ui_widget(self.search_bar_third, self.third_matches, self.third_match_idx, self.third_scroll)
+
     def next_third_search(self):
         if not self.third_matches: return
         self.third_match_idx = (self.third_match_idx + 1) % len(self.third_matches)
-        self.move_to_third_match(self.third_match_idx)
-        self.update_third_search_ui()
+        self._update_search_ui_widget(self.search_bar_third, self.third_matches, self.third_match_idx, self.third_scroll)
+
     def prev_third_search(self):
         if not self.third_matches: return
         self.third_match_idx = (self.third_match_idx - 1) % len(self.third_matches)
-        self.move_to_third_match(self.third_match_idx)
-        self.update_third_search_ui()
-    def update_third_search_ui(self): self.search_bar_third.set_count_text(f"{self.third_match_idx + 1}/{len(self.third_matches)}")
-    def move_to_third_match(self, idx): self.third_scroll.verticalScrollBar().setValue(self.third_matches[idx].y())
+        self._update_search_ui_widget(self.search_bar_third, self.third_matches, self.third_match_idx, self.third_scroll)
+
+    def _update_search_ui(self, bar, matches, idx, scroll, widgets):
+        if not matches: bar.set_count_text("0/0"); return
+        bar.set_count_text(f"{idx+1}/{len(matches)}")
+        scroll.verticalScrollBar().setValue(widgets[matches[idx]].y())
+
+    def _update_search_ui_widget(self, bar, matches, idx, scroll):
+        if not matches: bar.set_count_text("0/0"); return
+        bar.set_count_text(f"{idx+1}/{len(matches)}")
+        scroll.verticalScrollBar().setValue(matches[idx].y())
+
+    def _clear_layouts(self):
+        for l in [self.left_layout, self.right_layout, self.third_layout]:
+            while l.count():
+                it = l.takeAt(0)
+                if it.widget(): it.widget().deleteLater()
+        self.left_widgets.clear()
+        self.right_widget_map.clear()
+        self.right_sep_map.clear()
+        self.third_sep_map.clear()
+
+    def _extract_key(self, txt):
+        m = self.re_art_key.match(txt)
+        return m.group(1).replace(" ", "") if m else ""
+
+    def _connect_search(self, bar, run, nxt, prv):
+        bar.search_requested.connect(run); bar.next_clicked.connect(nxt); bar.prev_clicked.connect(prv)
+
+    def refresh_combo(self):
+        self.combo.blockSignals(True)
+        self.combo.clear()
+        self.combo.addItems(self.manager.config["DATABASES"].keys())
+        self.combo.blockSignals(False)
+        if self.combo.count() > 0: self.load_law()
 
     def update_custom_font(self, family, size):
-        self.curr_font = family
-        self.curr_size = size
-        for w in self.left_widgets: w.set_custom_font(family, size)
-        for i in range(self.right_layout.count()):
-            item = self.right_layout.itemAt(i)
-            if item.widget() and isinstance(item.widget(), ReferenceWidget): item.widget().setFont(QFont(family, size))
-        for i in range(self.third_layout.count()):
-            item = self.third_layout.itemAt(i)
-            if item.widget() and isinstance(item.widget(), ReferenceWidget): item.widget().setFont(QFont(family, size)) 
-        self.load_law() 
+        self.curr_font, self.curr_size = family, size
+        self.load_law()
 
-    def open_new_window(self, link_text):
-        law_name = link_text.replace("「", "").replace("」", "")
-        content_widget = QWidget()
-        layout = QVBoxLayout(content_widget)
-        lbl_title = QLabel(f"{law_name} (상세 보기)")
-        lbl_title.setFont(QFont(self.curr_font, 14, QFont.Bold))
-        lbl_title.setAlignment(Qt.AlignCenter)
-        layout.addWidget(lbl_title)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        w_content = QWidget()
-        w_layout = QVBoxLayout(w_content)
-        w_layout.setAlignment(Qt.AlignTop)
-        scroll.setWidget(w_content)
-        layout.addWidget(scroll)
+    def open_new_window(self, link):
+        law_name = link.replace("「", "").replace("」", "")
+        content = QWidget()
+        lay = QVBoxLayout(content)
         data = self.manager.get_parsed_data(law_name)
-        base_name = law_name.replace(" 시행령", "").replace(" 시행규칙", "")
-        law_code = self.manager.config["DATABASES"].get(base_name)
-        img_base_path = os.path.join(self.manager.data_dir, self.manager.config["IMAGE_FOLDERS"].get(law_code)) if law_code and self.manager.config["IMAGE_FOLDERS"].get(law_code) else None
         if data:
-            progress = QProgressDialog(f"{law_name} 불러오는 중...", "취소", 0, len(data), self)
-            progress.setWindowModality(Qt.WindowModal)
-            progress.show()
-            for i, item in enumerate(data):
-                if progress.wasCanceled(): break
-                w = ArticleWidget(item['chapter'], item['title'], item['content'], self.curr_font, self.curr_size, image_base_path=img_base_path)
-                w.link_clicked.connect(self.open_new_window)
-                w_layout.addWidget(w)
-                progress.setValue(i+1)
-                QApplication.processEvents()
-        else: w_layout.addWidget(QLabel("데이터 없음"))
-        new_window = DetachedWindow(law_name, content_widget)
-        new_window.resize(600, 800)
-        new_window.show()
-        self.detached_windows.append(new_window)
+            scroll = QScrollArea(); scroll.setWidgetResizable(True)
+            inner = QWidget(); in_lay = QVBoxLayout(inner); in_lay.setAlignment(Qt.AlignTop)
+            scroll.setWidget(inner); lay.addWidget(scroll)
+            for item in data:
+                in_lay.addWidget(ArticleWidget(item['chapter'], item['title'], item['content'], self.curr_font, self.curr_size))
+            win = DetachedWindow(law_name, content)
+            win.resize(600, 800); win.show()
+            self.detached_windows.append(win)
